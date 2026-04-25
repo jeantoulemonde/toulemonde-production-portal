@@ -1,0 +1,12 @@
+{
+  "name": "leon-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "mssql": "^12.5.0"
+  }
+}

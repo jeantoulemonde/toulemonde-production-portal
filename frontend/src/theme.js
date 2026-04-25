@@ -1,0 +1,32 @@
+export const theme = {
+  primary_color: "rgb(0,0,254)",
+  background: "#f5f0e8",
+  surface: "#faf8f4",
+  text_primary: "#0a0a0a",
+  text_secondary: "#666666",
+  card_radius: "16px",
+  shadow_soft: "0 18px 45px rgba(0,0,0,0.08)",
+};
+
+export const T = {
+  lin: "#e8dcc8",
+  linDark: "#c9b99a",
+  ecru: theme.background,
+  ecruDark: "#ede5d6",
+  noir: theme.text_primary,
+  noirMid: "#2a2a2a",
+  blanc: theme.surface,
+  text: "#111111",
+  textSoft: theme.text_secondary,
+  border: "rgba(0,0,0,0.10)",
+  borderMid: "rgba(0,0,0,0.18)",
+  bleu: theme.primary_color,
+  bleuPale: "rgba(0,0,254,0.06)",
+  bleuBorder: "rgba(0,0,254,0.22)",
+  danger: "#9f1d1d",
+  green: "#236b38",
+  cardRadius: theme.card_radius,
+  shadowSoft: theme.shadow_soft,
+  fontDisplay: "'Cormorant Garamond', Georgia, serif",
+  fontBody: "'DM Sans', system-ui, sans-serif",
+};
