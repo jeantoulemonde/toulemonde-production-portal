@@ -1,7 +1,7 @@
 import { styles } from "../styles";
 import { clientStatus, formatDate } from "../utils/formatters";
 
-function ClientOrdersTable({ orders, columns, empty }) {
+function ClientOrdersTable({ orders, columns, empty, actions }) {
   if (!orders.length) return <div style={styles.emptyState}>{empty}</div>;
 
   const labels = {
@@ -24,13 +24,14 @@ function ClientOrdersTable({ orders, columns, empty }) {
   };
 
   return (
-    <div style={{ ...styles.table, gridTemplateColumns: `repeat(${columns.length}, minmax(120px, 1fr))` }}>
+    <div style={{ ...styles.table, gridTemplateColumns: `repeat(${columns.length + (actions ? 1 : 0)}, minmax(120px, 1fr))` }}>
       {columns.map((column) => (
         <div key={`head-${column}`} style={styles.tableHead}>{labels[column]}</div>
       ))}
+      {actions && <div style={styles.tableHead}>Actions</div>}
       {orders.map((order) => columns.map((column) => (
         <div key={`${order.id}-${column}`} style={styles.cell}>{values[column](order)}</div>
-      )))}
+      )).concat(actions ? [<div key={`${order.id}-actions`} style={styles.cell}>{actions(order)}</div>] : []))}
     </div>
   );
 }

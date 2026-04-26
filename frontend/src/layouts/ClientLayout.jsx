@@ -32,7 +32,7 @@ function ClientLayout() {
   }, []);
 
   function logout() {
-    clearSession();
+    clearSession("client");
     navigate("/client/login");
   }
 

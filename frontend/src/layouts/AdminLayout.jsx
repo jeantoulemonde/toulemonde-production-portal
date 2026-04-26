@@ -17,7 +17,7 @@ function AdminLayout() {
   const navigate = useNavigate();
 
   function logout() {
-    clearSession();
+    clearSession("admin");
     navigate("/admin/login");
   }
 

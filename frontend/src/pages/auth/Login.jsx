@@ -33,7 +33,7 @@ function Login({ mode = "client" }) {
         }
       );
 
-      setSession(data);
+      setSession(data, isAdmin ? "admin" : "client");
       navigate(data.redirectTo || (isAdmin ? "/admin" : "/client"));
     } catch (err) {
       setError(err.message);

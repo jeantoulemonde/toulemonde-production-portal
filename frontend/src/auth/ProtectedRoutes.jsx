@@ -1,10 +1,12 @@
 import { Navigate } from "react-router";
-import { getSession } from "./session";
+import { getLegacySession, getSession } from "./session";
 
 export const ADMIN_ROLES = ["admin_portal", "commercial", "production", "super_admin"];
 
-function Protected({ children, roles, redirectTo }) {
-  const { token, user } = getSession();
+function Protected({ children, roles, redirectTo, scope }) {
+  const session = getSession(scope);
+  const legacySession = getLegacySession();
+  const { token, user } = session.token ? session : legacySession;
 
   if (!token || !user) {
     return <Navigate to={redirectTo} replace />;
@@ -19,7 +21,7 @@ function Protected({ children, roles, redirectTo }) {
 
 export function ClientProtectedRoute({ children }) {
   return (
-    <Protected roles={["client"]} redirectTo="/client/login">
+    <Protected scope="client" roles={["client"]} redirectTo="/client/login">
       {children}
     </Protected>
   );
@@ -27,7 +29,7 @@ export function ClientProtectedRoute({ children }) {
 
 export function AdminProtectedRoute({ children }) {
   return (
-    <Protected roles={ADMIN_ROLES} redirectTo="/admin/login">
+    <Protected scope="admin" roles={ADMIN_ROLES} redirectTo="/admin/login">
       {children}
     </Protected>
   );

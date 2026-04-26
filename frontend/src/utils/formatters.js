@@ -2,6 +2,7 @@ export const clientStatusLabels = {
   draft: "Brouillon",
   submitted: "Envoyée",
   pending_validation: "En validation",
+  rejected: "Refusée",
   pending_sage_sync: "Envoyée",
   sage_sync_failed: "En validation",
   sent_to_sage: "Acceptée",
@@ -32,6 +33,7 @@ export function formatDateTime(value) {
 export function formatCell(value) {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "number") return value;
+  if (typeof value === "string" && clientStatusLabels[value]) return clientStatus(value);
   if (typeof value === "string" && value.includes("T")) return formatDateTime(value);
   return String(value);
 }
@@ -66,7 +68,15 @@ export function adminFieldLabel(field) {
     client_reference: "Référence client",
     material: "Matière",
     yarn_count: "Titre Nm",
+    ply_number: "Nombre de plis",
+    color_reference: "Référence couleur",
+    dyeing_required: "Teinture requise",
     quantity_kg: "Quantité kg",
+    conditioning: "Conditionnement",
+    destination_usage: "Usage",
+    tolerance_percent: "Tolérance",
+    partial_delivery_allowed: "Livraison partielle",
+    comment: "Commentaire",
     status: "Statut",
     sage_order_number: "N° Sage",
     created_at: "Créé le",

@@ -30,10 +30,24 @@ function AdminClientDetail() {
   }
 
   async function resetPassword() {
-    const user = data?.users?.[0];
+    const user = linkedUser;
     if (!user) return setMessage("Aucun utilisateur client lié.");
     const result = await api(`/api/admin/users/${user.id}/reset-password`, { method: "POST" });
     setMessage(`Lien de réinitialisation : ${result.resetLink}`);
+  }
+
+  async function toggleLinkedUserStatus() {
+    const user = linkedUser;
+    if (!user) return setMessage("Aucun utilisateur client lié.");
+    const nextActive = !(user.is_active === 1 || user.status === "active");
+
+    await api(`/api/admin/users/${user.id}/status`, {
+      method: "PATCH",
+      body: JSON.stringify({ is_active: nextActive }),
+    });
+
+    setMessage(nextActive ? "Utilisateur réactivé." : "Utilisateur désactivé.");
+    await load();
   }
 
   async function createLinkedUser() {
@@ -54,10 +68,20 @@ function AdminClientDetail() {
 
   if (!data) return <div style={styles.cardWide}>Chargement...</div>;
 
+  const linkedUser = data.users?.[0] || (client.user_id ? {
+    id: client.user_id,
+    full_name: client.user_name,
+    email: client.user_email,
+    status: client.user_status,
+    last_login_at: client.last_login_at,
+    is_active: client.user_status === "active" ? 1 : 0,
+  } : null);
+  const linkedUserActive = linkedUser && (linkedUser.is_active === 1 || linkedUser.status === "active");
+
   return (
     <form style={styles.pageStack} onSubmit={save}>
       <PageHeader variant="admin" kicker="Administration" title={client.company_name || "Client"} subtitle="Détail client, coordonnées, informations Sage et commandes liées.">
-        <button type="button" style={styles.ghostButton} onClick={resetPassword}>Réinitialiser mot de passe</button>
+        {linkedUser && <button type="button" style={styles.ghostButton} onClick={resetPassword}>Réinitialiser mot de passe</button>}
       </PageHeader>
       {message && <div style={styles.success}>{message}</div>}
       <ProfileSection title="Informations société">
@@ -77,12 +101,18 @@ function AdminClientDetail() {
       </ProfileSection>
       <section style={styles.cardWide}>
         <h2 style={styles.cardTitle}>Utilisateur portail</h2>
-        {client.user_id ? (
+        {linkedUser ? (
           <div style={styles.summaryGrid}>
-            <div style={styles.summaryItem}><div style={styles.label}>Nom</div><div>{client.user_name || "—"}</div></div>
-            <div style={styles.summaryItem}><div style={styles.label}>Email</div><div>{client.user_email || "—"}</div></div>
-            <div style={styles.summaryItem}><div style={styles.label}>Statut</div><div>{client.user_status || "—"}</div></div>
-            <div style={styles.summaryItem}><div style={styles.label}>Dernière connexion</div><div>{formatDateTime(client.last_login_at)}</div></div>
+            <div style={styles.summaryItem}><div style={styles.label}>Nom</div><div>{linkedUser.full_name || linkedUser.user_name || client.user_name || "—"}</div></div>
+            <div style={styles.summaryItem}><div style={styles.label}>Email de connexion</div><div>{linkedUser.email || client.user_email || "—"}</div></div>
+            <div style={styles.summaryItem}><div style={styles.label}>Statut utilisateur</div><div>{linkedUserActive ? "Actif" : "Désactivé"}</div></div>
+            <div style={styles.summaryItem}><div style={styles.label}>Dernière connexion</div><div>{formatDateTime(linkedUser.last_login_at || client.last_login_at)}</div></div>
+            <div style={{ ...styles.summaryItem, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <button type="button" style={styles.ghostButton} onClick={resetPassword}>Reset password</button>
+              <button type="button" style={styles.ghostButton} onClick={toggleLinkedUserStatus}>
+                {linkedUserActive ? "Désactiver utilisateur" : "Réactiver utilisateur"}
+              </button>
+            </div>
           </div>
         ) : (
           <div style={styles.emptyState}>

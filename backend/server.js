@@ -140,8 +140,15 @@ function agentRequired(req, res, next) {
   next();
 }
 
-function generateOrderNumber() {
-  return `FIL-${new Date().getFullYear()}-${Date.now().toString().slice(-7)}`;
+async function generateOrderNumber() {
+  const year = new Date().getFullYear();
+  const prefix = `TP-${year}-`;
+  const row = await get(
+    `SELECT order_number FROM portal_orders WHERE order_number LIKE ? ORDER BY order_number DESC LIMIT 1`,
+    [`${prefix}%`]
+  );
+  const lastNumber = row?.order_number ? Number(String(row.order_number).replace(prefix, "")) : 0;
+  return `${prefix}${String(lastNumber + 1).padStart(4, "0")}`;
 }
 
 function requireFields(body, fields) {
@@ -411,6 +418,10 @@ async function initDb() {
   await addColumnIfMissing("portal_orders", "requested_delivery_date", "TEXT");
   await addColumnIfMissing("portal_orders", "sync_status", "TEXT");
   await addColumnIfMissing("portal_orders", "internal_comment", "TEXT");
+  await addColumnIfMissing("portal_orders", "ply_number", "TEXT");
+  await addColumnIfMissing("portal_orders", "color_reference", "TEXT");
+  await addColumnIfMissing("portal_orders", "tolerance_percent", "REAL");
+  await addColumnIfMissing("portal_orders", "partial_delivery_allowed", "INTEGER DEFAULT 0");
   await addColumnIfMissing("portal_users", "status", "TEXT DEFAULT 'active'");
   await addColumnIfMissing("portal_users", "client_id", "INTEGER");
   await addColumnIfMissing("portal_users", "last_login_at", "DATETIME");
@@ -650,12 +661,15 @@ async function createPortalOrder(req, res) {
       ...body,
       client_reference: body.client_reference || body.customer_reference || null,
       yarn_count: body.yarn_count || body.yarn_count_nm || null,
+      ply_number: body.ply_number !== undefined ? String(body.ply_number) : null,
       urgency: body.urgency || (body.urgent ? "urgent" : "normal"),
       tolerance: body.tolerance || (body.tolerance_percent !== undefined ? String(body.tolerance_percent) : null),
+      tolerance_percent: body.tolerance_percent !== undefined && body.tolerance_percent !== "" ? Number(body.tolerance_percent) : null,
       comment: body.comment || body.commentaire_technique || null,
-      requested_date: body.requested_date || body.requested_delivery_date || null,
+      requested_date: body.requested_date || null,
+      requested_delivery_date: body.requested_delivery_date || null,
     };
-    const missing = requireFields(normalized, ["material", "yarn_count", "quantity_kg"]);
+    const missing = requireFields(normalized, ["client_reference", "requested_date", "material", "yarn_count", "quantity_kg", "requested_delivery_date"]);
     if (missing.length) return res.status(400).json({ error: `Champs manquants : ${missing.join(", ")}` });
 
     const client = req.user.role === "client" ? await getUserClient(req.user) : null;
@@ -663,8 +677,8 @@ async function createPortalOrder(req, res) {
     const clientId = client?.id || normalized.client_id || null;
     if (!customerCode) return res.status(400).json({ error: "customer_code requis" });
 
-    const status = normalized.status || "submitted";
-    const orderNumber = generateOrderNumber();
+    const status = "submitted";
+    const orderNumber = await generateOrderNumber();
     const result = await run(
       `
         INSERT INTO portal_orders (
@@ -674,8 +688,10 @@ async function createPortalOrder(req, res) {
           client_reference,
           material,
           yarn_count,
+          ply_number,
           twist,
           color,
+          color_reference,
           dyeing_required,
           conditioning,
           quantity_kg,
@@ -684,13 +700,15 @@ async function createPortalOrder(req, res) {
           urgency,
           destination_usage,
           tolerance,
+          tolerance_percent,
           comment,
+          partial_delivery_allowed,
           status,
           created_by,
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `,
       [
         orderNumber,
@@ -699,17 +717,21 @@ async function createPortalOrder(req, res) {
         normalized.client_reference || null,
         normalized.material,
         normalized.yarn_count,
+        normalized.ply_number,
         normalized.twist || null,
         normalized.color || null,
+        normalized.color_reference || null,
         normalized.dyeing_required ? 1 : 0,
         normalized.conditioning || null,
         Number(normalized.quantity_kg),
         normalized.requested_date || null,
-        body.requested_delivery_date || null,
+        normalized.requested_delivery_date || null,
         normalized.urgency || "normal",
         normalized.destination_usage || null,
         normalized.tolerance || null,
+        normalized.tolerance_percent,
         normalized.comment || null,
+        normalized.partial_delivery_allowed ? 1 : 0,
         status,
         req.user.sub,
       ]
@@ -724,39 +746,18 @@ async function createPortalOrder(req, res) {
       [result.id, null, status, "portal", "Commande créée depuis le portail"]
     );
 
-    let actionId = null;
-    if (status !== "draft") {
-      await run(`UPDATE portal_orders SET status = 'pending_sage_sync' WHERE id = ?`, [result.id]);
-      actionId = await createPendingAction("CREATE_SAGE_ORDER", {
-        portalOrderId: result.id,
-        entityType: "portal_order",
-        entityId: result.id,
-        orderNumber,
-        customerCode,
-        order: normalized,
-      });
-      await run(
-        `INSERT INTO portal_order_status_history (portal_order_id, old_status, new_status, source, message) VALUES (?, ?, ?, ?, ?)`,
-        [result.id, status, "pending_sage_sync", "portal", "Commande préparée pour traitement"]
-      );
-      await run(
-        `INSERT INTO sync_logs (system, direction, status, message) VALUES (?, ?, ?, ?)`,
-        ["SAGE", "OUTBOUND", "PENDING", `Action ERP ${actionId} créée pour ${orderNumber}`]
-      );
-    }
-
     await auditLog({
       userId: req.user.sub,
       role: req.user.role,
       action: "PORTAL_ORDER_CREATE",
       entityType: "portal_order",
       entityId: String(result.id),
-      metadata: { orderNumber, actionId },
+      metadata: { orderNumber },
       ip: req.ip,
     });
 
     const order = await get(`SELECT * FROM portal_orders WHERE id = ?`, [result.id]);
-    res.status(201).json({ order, actionId });
+    res.status(201).json({ order });
   } catch (error) {
     console.error("Erreur création commande portail :", error.message);
     res.status(500).json({ error: "Erreur création commande" });
@@ -1217,6 +1218,64 @@ app.get("/api/admin/orders/:id", authRequired, requireAdmin, async (req, res) =>
   const logs = await all(`SELECT * FROM sync_logs WHERE entity_type = 'portal_order' AND entity_id = ? ORDER BY id DESC`, [String(order.id)]);
   const documents = await all(`SELECT * FROM portal_documents WHERE order_id = ? ORDER BY id DESC`, [order.id]);
   res.json({ order, specs, history, logs, documents });
+});
+
+app.patch("/api/admin/orders/:id/status", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const { status, message, internal_comment: internalComment } = req.body || {};
+    const allowedStatuses = [
+      "submitted",
+      "pending_validation",
+      "approved",
+      "rejected",
+      "pending_sage_sync",
+      "sent_to_sage",
+      "sage_sync_failed",
+      "in_production",
+      "ready",
+      "delivered",
+      "cancelled",
+    ];
+
+    if (!allowedStatuses.includes(status)) {
+      return res.status(400).json({ error: "Statut invalide" });
+    }
+
+    const order = await get(`SELECT * FROM portal_orders WHERE id = ?`, [req.params.id]);
+    if (!order) return res.status(404).json({ error: "Commande introuvable" });
+
+    await run(
+      `
+        UPDATE portal_orders
+        SET status = ?, internal_comment = COALESCE(?, internal_comment), updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `,
+      [status, internalComment || message || null, order.id]
+    );
+
+    await run(
+      `
+        INSERT INTO portal_order_status_history (portal_order_id, old_status, new_status, source, message)
+        VALUES (?, ?, ?, ?, ?)
+      `,
+      [order.id, order.status, status, "admin", message || internalComment || null]
+    );
+
+    await auditLog({
+      userId: req.user.sub,
+      role: req.user.role,
+      action: "ADMIN_ORDER_STATUS_UPDATE",
+      entityType: "portal_order",
+      entityId: String(order.id),
+      metadata: { oldStatus: order.status, newStatus: status, message: message || internalComment || null },
+      ip: req.ip,
+    });
+
+    res.json({ success: true, order: await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]) });
+  } catch (error) {
+    console.error("Erreur changement statut commande :", error.message);
+    res.status(500).json({ error: "Erreur changement statut commande" });
+  }
 });
 
 app.post("/api/admin/orders/:id/force-sync", authRequired, requireAdmin, async (req, res) => {

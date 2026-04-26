@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router";
 import { styles } from "../../styles";
 import { api } from "../../api/api";
 import ClientOrdersTable from "../../components/ClientOrdersTable";
 import PageHeader from "../../components/PageHeader";
 
 function ClientOrders() {
+  const navigate = useNavigate();
   const [orders, setOrders] = useState([]);
   useEffect(() => { api("/api/client/orders").then(setOrders).catch(console.error); }, []);
   return (
@@ -14,12 +16,12 @@ function ClientOrders() {
         title="Mes commandes"
         subtitle="Consultez l’historique et l’avancement de vos demandes de production."
       />
-      <OrderList title="Commandes" orders={orders} />
+      <OrderList title="Commandes" orders={orders} onOpen={(order) => navigate(`/client/orders/${order.id}`)} />
     </div>
   );
 }
 
-function OrderList({ title, orders }) {
+function OrderList({ title, orders, onOpen }) {
   return (
     <section style={styles.cardWide}>
       <h2 style={styles.cardTitle}>{title}</h2>
@@ -27,6 +29,7 @@ function OrderList({ title, orders }) {
         orders={orders}
         columns={["order", "reference", "material", "count", "quantity", "status", "date"]}
         empty="Aucune commande pour le moment."
+        actions={(order) => <button style={styles.linkButton} onClick={() => onOpen(order)}>Détail</button>}
       />
     </section>
   );
