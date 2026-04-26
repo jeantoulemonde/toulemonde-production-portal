@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../../api/api";
 import { styles } from "../../styles";
 import { formatDateTime } from "../../utils/formatters";
-import AdminPageHeader from "../../components/AdminPageHeader";
+import PageHeader from "../../components/PageHeader";
 import AdminInput from "../../components/AdminInput";
 import Field from "../../components/Field";
 import Metric from "../../components/Metric";
@@ -50,7 +50,7 @@ function AdminConnectorSage() {
   }
   return (
     <div style={styles.pageStack}>
-      <AdminPageHeader title="Connecteur Sage" subtitle="Configuration admin des échanges entre le portail et Sage." />
+      <PageHeader variant="admin" kicker="Administration" title="Connecteur Sage" subtitle="Configuration admin des échanges entre le portail et Sage." />
       {message && <div style={styles.success}>{message}</div>}
       <section style={styles.cardWide}>
         <h2 style={styles.cardTitle}>Statut</h2>

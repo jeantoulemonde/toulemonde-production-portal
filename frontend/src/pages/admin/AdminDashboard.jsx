@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api/api";
 import { styles } from "../../styles";
-import AdminPageHeader from "../../components/AdminPageHeader";
+import PageHeader from "../../components/PageHeader";
 import Metric from "../../components/Metric";
 
 function AdminDashboard() {
@@ -9,7 +9,7 @@ function AdminDashboard() {
   useEffect(() => { api("/api/admin/dashboard").then(setStats).catch(console.error); }, []);
   return (
     <div style={styles.pageStack}>
-      <AdminPageHeader title="Dashboard" subtitle="Pilotage du portail client Toulemonde Production." />
+      <PageHeader variant="admin" kicker="Administration" title="Dashboard" subtitle="Pilotage du portail client Toulemonde Production." />
       <div style={styles.grid}>
         <Metric title="Clients" value={stats?.clients ?? "—"} />
         <Metric title="Utilisateurs" value={stats?.users ?? "—"} />

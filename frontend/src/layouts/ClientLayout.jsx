@@ -74,10 +74,7 @@ function ClientLayout() {
           ...(isMobile ? styles.menuDrawerMobile : {}),
         }}
       >
-        <div style={styles.menuLogoPanel}>
-          <img src={logoMarkBlue} alt="Toulemonde" style={styles.menuLogo} />
-          {drawerExpanded && <div style={styles.menuSubtitle}>Portail privé filature</div>}
-        </div>
+
         <nav style={styles.nav}>
           <NavItem to="/client" label="Accueil" icon={Home} collapsed={!drawerExpanded} end onNavigate={() => isMobile && setMenuOpen(false)} />
           <NavItem to="/client/orders/new" label="Nouvelle commande" icon={PlusCircle} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />

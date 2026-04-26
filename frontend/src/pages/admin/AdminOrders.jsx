@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { api } from "../../api/api";
 import { styles } from "../../styles";
-import AdminPageHeader from "../../components/AdminPageHeader";
+import PageHeader from "../../components/PageHeader";
 import SimpleTable from "../../components/SimpleTable";
 
 function AdminOrders() {
@@ -11,7 +11,7 @@ function AdminOrders() {
   useEffect(() => { api("/api/admin/orders").then(setOrders).catch(console.error); }, []);
   return (
     <div style={styles.pageStack}>
-      <AdminPageHeader title="Commandes" subtitle="Suivi interne des commandes portail et statuts." />
+      <PageHeader variant="admin" kicker="Administration" title="Commandes" subtitle="Suivi interne des commandes portail et statuts." />
       <section style={styles.cardWide}>
         <SimpleTable
           columns={["order_number", "client_reference", "company_name", "material", "yarn_count", "quantity_kg", "status", "sage_order_number", "created_at", "requested_delivery_date"]}

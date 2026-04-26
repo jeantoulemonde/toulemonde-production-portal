@@ -3,7 +3,7 @@ import { useParams } from "react-router";
 import { api } from "../../api/api";
 import { styles } from "../../styles";
 import { adminFieldLabel } from "../../utils/formatters";
-import AdminPageHeader from "../../components/AdminPageHeader";
+import PageHeader from "../../components/PageHeader";
 import SimpleTable from "../../components/SimpleTable";
 
 function AdminOrderDetail() {
@@ -19,9 +19,9 @@ function AdminOrderDetail() {
   }
   return (
     <div style={styles.pageStack}>
-      <AdminPageHeader title={order.order_number || `Commande ${id}`} subtitle={order.company_name || "Commande portail"}>
+      <PageHeader variant="admin" kicker="Administration" title={order.order_number || `Commande ${id}`} subtitle={order.company_name || "Commande portail"}>
         <button style={styles.primaryButton} onClick={forceSync}>Forcer sync Sage</button>
-      </AdminPageHeader>
+      </PageHeader>
       {message && <div style={styles.success}>{message}</div>}
       <section style={styles.cardWide}>
         <h2 style={styles.cardTitle}>Détails techniques</h2>

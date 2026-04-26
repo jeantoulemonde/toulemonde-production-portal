@@ -5,6 +5,7 @@ import { api } from "../../api/api";
 import { styles } from "../../styles";
 import { useIsMobile } from "../../utils/useIsMobile";
 import ClientOrdersTable from "../../components/ClientOrdersTable";
+import PageHeader from "../../components/PageHeader";
 
 function ClientDashboard() {
   const navigate = useNavigate();
@@ -16,6 +17,11 @@ function ClientDashboard() {
 
   return (
     <div style={styles.pageStack}>
+      <PageHeader
+        kicker="Portail client"
+        title="Mon espace production"
+        subtitle="Suivez vos commandes de fil et créez vos nouvelles demandes de production."
+      />
       <section style={styles.heroPanel}>
         <img src={atelierMachines} alt="" style={styles.heroImage} />
         <div style={styles.heroOverlay} />

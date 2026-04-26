@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import { api } from "../../api/api";
 import { styles } from "../../styles";
 import { adminFieldLabel } from "../../utils/formatters";
-import AdminPageHeader from "../../components/AdminPageHeader";
+import PageHeader from "../../components/PageHeader";
 import Field from "../../components/Field";
 import SimpleTable from "../../components/SimpleTable";
 
@@ -48,9 +48,9 @@ function AdminClients() {
 
   return (
     <div style={styles.pageStack}>
-      <AdminPageHeader title="Clients" subtitle="Gestion des comptes clients et informations société.">
+      <PageHeader variant="admin" kicker="Administration" title="Clients" subtitle="Gestion des comptes clients et informations société.">
         <button style={styles.primaryButton} onClick={() => setFormOpen((open) => !open)}>Nouveau client</button>
-      </AdminPageHeader>
+      </PageHeader>
       {message && <div style={styles.success}>{message}</div>}
       {formOpen && (
         <form style={styles.cardWide} onSubmit={createClient}>

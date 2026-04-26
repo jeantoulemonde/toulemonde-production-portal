@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api/api";
 import { styles } from "../../styles";
-import AdminPageHeader from "../../components/AdminPageHeader";
+import PageHeader from "../../components/PageHeader";
 import Field from "../../components/Field";
 import Select from "../../components/Select";
 import SimpleTable from "../../components/SimpleTable";
@@ -32,7 +32,7 @@ function AdminUsers() {
 
   return (
     <div style={styles.pageStack}>
-      <AdminPageHeader title="Utilisateurs" subtitle="Comptes client et rôles internes." />
+      <PageHeader variant="admin" kicker="Administration" title="Utilisateurs" subtitle="Comptes client et rôles internes." />
       {message && <div style={styles.success}>{message}</div>}
       <form style={styles.cardWide} onSubmit={createUser}>
         <h2 style={styles.cardTitle}>Créer utilisateur</h2>

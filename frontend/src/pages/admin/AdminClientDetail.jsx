@@ -3,7 +3,7 @@ import { useParams } from "react-router";
 import { api } from "../../api/api";
 import { styles } from "../../styles";
 import { formatDateTime } from "../../utils/formatters";
-import AdminPageHeader from "../../components/AdminPageHeader";
+import PageHeader from "../../components/PageHeader";
 import AdminInput from "../../components/AdminInput";
 import ClientOrdersTable from "../../components/ClientOrdersTable";
 import ProfileSection from "../../components/ProfileSection";
@@ -56,9 +56,9 @@ function AdminClientDetail() {
 
   return (
     <form style={styles.pageStack} onSubmit={save}>
-      <AdminPageHeader title={client.company_name || "Client"} subtitle="Détail client, coordonnées, informations Sage et commandes liées.">
+      <PageHeader variant="admin" kicker="Administration" title={client.company_name || "Client"} subtitle="Détail client, coordonnées, informations Sage et commandes liées.">
         <button type="button" style={styles.ghostButton} onClick={resetPassword}>Réinitialiser mot de passe</button>
-      </AdminPageHeader>
+      </PageHeader>
       {message && <div style={styles.success}>{message}</div>}
       <ProfileSection title="Informations société">
         {["company_name", "vat_number", "contact_email", "phone"].map((field) => <AdminInput key={field} field={field} value={client[field]} onChange={(value) => setClient({ ...client, [field]: value })} />)}

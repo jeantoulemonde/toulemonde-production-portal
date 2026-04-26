@@ -27,6 +27,7 @@ export const T = {
   green: "#236b38",
   cardRadius: theme.card_radius,
   shadowSoft: theme.shadow_soft,
-  fontDisplay: "'Cormorant Garamond', Georgia, serif",
-  fontBody: "'DM Sans', system-ui, sans-serif",
+  fontBody: "'Raleway', sans-serif",
+  fontTitle: "'Raleway', sans-serif",
+  fontDisplay: "'Raleway', sans-serif",
 };

@@ -6,6 +6,7 @@ import { api } from "../../api/api";
 import { styles } from "../../styles";
 import { useIsMobile } from "../../utils/useIsMobile";
 import Field from "../../components/Field";
+import PageHeader from "../../components/PageHeader";
 import Select from "../../components/Select";
 
 function NewYarnOrder() {
@@ -91,10 +92,15 @@ function NewYarnOrder() {
 
   return (
     <form style={styles.wizardShell} onSubmit={submit}>
+      <PageHeader
+        kicker="Portail client"
+        title="Nouvelle commande filature"
+        subtitle="Décrivez votre besoin technique de fil étape par étape."
+      />
       <div style={{ ...styles.wizardHeader, ...(isMobile ? styles.wizardHeaderMobile : {}) }}>
         <div>
           <div style={styles.overline}>Commande de fil</div>
-          <h2 style={styles.cardTitle}>Nouvelle commande filature</h2>
+          <h2 style={styles.cardTitle}>Données de production</h2>
         </div>
         <img src={step < 2 ? atelierBobines : atelierMatiere} alt="" style={styles.wizardImage} />
       </div>
