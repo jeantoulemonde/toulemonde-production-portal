@@ -6,13 +6,14 @@ const path = require("path");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
+const { Pool } = require("pg");
 
 const app = express();
 const PORT = process.env.PORT || 3010;
 const JWT_SECRET = process.env.JWT_SECRET || "dev-change-me";
 const REFRESH_SECRET = process.env.REFRESH_SECRET || "dev-refresh-change-me";
 const AGENT_API_KEY = process.env.AGENT_API_KEY || "dev-agent-key";
-const TOKEN_TTL = "30m";
+const TOKEN_TTL = "8h";
 const REFRESH_TTL = "7d";
 
 const roles = ["client", "commercial", "admin_portal", "production", "super_admin"];
@@ -88,13 +89,21 @@ function authRequired(req, res, next) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
 
-  if (!token) return res.status(401).json({ error: "Authentification requise" });
+  if (!token) {
+    return res.status(401).json({
+      error: "Token invalide ou expiré",
+      code: "TOKEN_INVALID",
+    });
+  }
 
   try {
     req.user = jwt.verify(token, JWT_SECRET);
     next();
   } catch {
-    res.status(401).json({ error: "Token invalide" });
+    res.status(401).json({
+      error: "Token invalide ou expiré",
+      code: "TOKEN_INVALID",
+    });
   }
 }
 
@@ -124,6 +133,20 @@ function sanitizeConnectorConfig(config = {}) {
   return {
     ...config,
     password: config.password ? "********" : "",
+  };
+}
+
+function normalizeConnectorConfig(config = {}) {
+  return {
+    type: config.type || "postgres",
+    host: config.host || "localhost",
+    port: Number(config.port || 5432),
+    database: config.database || "",
+    user: config.user || undefined,
+    password: config.password || undefined,
+    ssl: config.ssl ? { rejectUnauthorized: false } : false,
+    inbound: config.inbound || {},
+    outbound: config.outbound || {},
   };
 }
 
@@ -165,6 +188,819 @@ async function createPendingAction(actionType, payload) {
     [actionType, payload.entityType || "portal_order", payload.portalOrderId || payload.entityId || null, JSON.stringify(payload)]
   );
   return result.id;
+}
+
+function normalizeOrderLine(line = {}) {
+  const countValue = line.count_system === "dtex"
+    ? line.dtex
+    : line.count_system === "numéro spécial / autre"
+      ? line.custom_count
+      : line.yarn_count_nm === "Autre"
+        ? line.custom_count
+        : line.yarn_count_nm || line.yarn_count;
+
+  return {
+    ...line,
+    application_type: line.application_type || null,
+    material_family: line.material_family || line.material || null,
+    material_quality: line.material_quality || null,
+    count_system: line.count_system || "Nm",
+    yarn_count_nm: line.yarn_count_nm || countValue || null,
+    dtex: line.dtex || null,
+    custom_count: line.custom_count || null,
+    ply_number: line.ply_number !== undefined ? String(line.ply_number) : null,
+    twist_type: line.twist_type || line.twist || null,
+    twist_direction: line.twist_direction || null,
+    finish: line.finish || null,
+    color_mode: line.color_mode || null,
+    color_name: line.color_name || line.color || null,
+    color_reference: line.color_reference || null,
+    dyeing_required: line.dyeing_required ? 1 : 0,
+    dyeing_comment: line.dyeing_comment || null,
+    packaging: line.packaging || line.conditioning || null,
+    quantity_kg: line.quantity_kg !== undefined && line.quantity_kg !== "" ? Number(line.quantity_kg) : null,
+    meterage_per_unit: line.meterage_per_unit || null,
+    tolerance_percent: line.tolerance_percent !== undefined && line.tolerance_percent !== "" ? Number(line.tolerance_percent) : null,
+    partial_delivery_allowed: line.partial_delivery_allowed ? 1 : 0,
+    production_comment: line.production_comment || line.comment || null,
+    count_value: countValue || null,
+  };
+}
+
+function lineValidationErrors(line) {
+  const errors = [];
+  if (!line.application_type) errors.push("application_type");
+  if (!line.material_family) errors.push("material_family");
+  if (!line.count_system) errors.push("count_system");
+  if (line.count_system === "Nm" && !line.yarn_count_nm) errors.push("yarn_count_nm");
+  if (line.count_system === "dtex" && !line.dtex) errors.push("dtex");
+  if (line.count_system === "numéro spécial / autre" && !line.custom_count) errors.push("custom_count");
+  if (!line.ply_number) errors.push("ply_number");
+  if (!line.packaging) errors.push("packaging");
+  if (!line.quantity_kg || Number(line.quantity_kg) <= 0) errors.push("quantity_kg");
+  return errors;
+}
+
+function preparePortalOrderPayload(body = {}, { allowEmptyLines = false } = {}) {
+  const bodyLines = Array.isArray(body.lines) ? body.lines : [];
+  const normalizedLines = bodyLines.length
+    ? bodyLines.map(normalizeOrderLine)
+    : allowEmptyLines
+      ? []
+      : [normalizeOrderLine(body)];
+  const general = {
+    client_reference: body.client_reference || body.customer_reference || null,
+    requested_delivery_date: body.requested_delivery_date || body.requested_date || null,
+    delivery_address_choice: body.delivery_address_choice || "profile",
+    delivery_address: body.delivery_address || null,
+    urgent: Boolean(body.urgent || body.urgency === "urgent"),
+    general_comment: body.general_comment || body.comment || null,
+    delivery_comment: body.delivery_comment || null,
+    technical_file_name: body.technical_file_name || null,
+  };
+  const firstLine = normalizedLines[0] || {};
+  const totalQuantity = normalizedLines.reduce((sum, line) => sum + Number(line.quantity_kg || 0), 0);
+  return { general, normalizedLines, firstLine, totalQuantity };
+}
+
+function validateSubmittedPortalOrder(general, normalizedLines) {
+  const generalMissing = requireFields(general, ["client_reference", "requested_delivery_date"]);
+  if (generalMissing.length) return { error: `Champs manquants : ${generalMissing.join(", ")}` };
+  if (!normalizedLines.length) return { error: "Ajoutez au moins une configuration fil." };
+  const lineErrors = normalizedLines
+    .map((line, index) => ({ index: index + 1, missing: lineValidationErrors(line) }))
+    .filter((item) => item.missing.length);
+  if (lineErrors.length) return { error: "Ligne de demande incomplète", lineErrors };
+  return null;
+}
+
+async function insertPortalOrderLine(orderId, line, index) {
+  const normalized = normalizeOrderLine(line);
+  await run(
+    `
+      INSERT INTO portal_order_lines (
+        portal_order_id, line_number, application_type, material_family, material_quality,
+        count_system, yarn_count_nm, dtex, custom_count, ply_number,
+        twist_type, twist_direction, finish, color_mode, color_name,
+        color_reference, dyeing_required, dyeing_comment, packaging, quantity_kg,
+        meterage_per_unit, tolerance_percent, partial_delivery_allowed, production_comment,
+        created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    `,
+    [
+      orderId,
+      index + 1,
+      normalized.application_type,
+      normalized.material_family,
+      normalized.material_quality,
+      normalized.count_system,
+      normalized.yarn_count_nm,
+      normalized.dtex,
+      normalized.custom_count,
+      normalized.ply_number,
+      normalized.twist_type,
+      normalized.twist_direction,
+      normalized.finish,
+      normalized.color_mode,
+      normalized.color_name,
+      normalized.color_reference,
+      normalized.dyeing_required,
+      normalized.dyeing_comment,
+      normalized.packaging,
+      normalized.quantity_kg,
+      normalized.meterage_per_unit,
+      normalized.tolerance_percent,
+      normalized.partial_delivery_allowed,
+      normalized.production_comment,
+    ]
+  );
+}
+
+async function replacePortalOrderLines(orderId, lines) {
+  await run(`DELETE FROM portal_order_lines WHERE portal_order_id = ?`, [orderId]);
+  for (const [index, line] of lines.entries()) {
+    await insertPortalOrderLine(orderId, line, index);
+  }
+}
+
+async function updatePortalOrderRecord(orderId, general, firstLine = {}, totalQuantity = 0, status, userId) {
+  await run(
+    `
+      UPDATE portal_orders
+      SET
+        client_reference = ?,
+        material = ?,
+        yarn_count = ?,
+        ply_number = ?,
+        twist = ?,
+        color = ?,
+        color_reference = ?,
+        dyeing_required = ?,
+        conditioning = ?,
+        quantity_kg = ?,
+        requested_date = ?,
+        requested_delivery_date = ?,
+        urgency = ?,
+        destination_usage = ?,
+        tolerance = ?,
+        tolerance_percent = ?,
+        comment = ?,
+        partial_delivery_allowed = ?,
+        application_type = ?,
+        material_family = ?,
+        material_quality = ?,
+        count_system = ?,
+        dtex = ?,
+        custom_count = ?,
+        twist_type = ?,
+        twist_direction = ?,
+        finish = ?,
+        color_mode = ?,
+        dyeing_comment = ?,
+        packaging = ?,
+        meterage_per_unit = ?,
+        production_comment = ?,
+        delivery_address_choice = ?,
+        delivery_address = ?,
+        delivery_comment = ?,
+        technical_file_name = ?,
+        status = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND created_by = ?
+    `,
+    [
+      general.client_reference,
+      firstLine.material_family || null,
+      firstLine.count_value || null,
+      firstLine.ply_number || null,
+      firstLine.twist_type || null,
+      firstLine.color_name || firstLine.color_mode || null,
+      firstLine.color_reference || null,
+      firstLine.dyeing_required || 0,
+      firstLine.packaging || null,
+      totalQuantity,
+      general.requested_delivery_date,
+      general.requested_delivery_date,
+      general.urgent ? "urgent" : "normal",
+      firstLine.application_type || null,
+      firstLine.tolerance_percent !== null && firstLine.tolerance_percent !== undefined ? String(firstLine.tolerance_percent) : null,
+      firstLine.tolerance_percent || null,
+      general.general_comment,
+      firstLine.partial_delivery_allowed || 0,
+      firstLine.application_type || null,
+      firstLine.material_family || null,
+      firstLine.material_quality || null,
+      firstLine.count_system || null,
+      firstLine.dtex || null,
+      firstLine.custom_count || null,
+      firstLine.twist_type || null,
+      firstLine.twist_direction || null,
+      firstLine.finish || null,
+      firstLine.color_mode || null,
+      firstLine.dyeing_comment || null,
+      firstLine.packaging || null,
+      firstLine.meterage_per_unit || null,
+      firstLine.production_comment || null,
+      general.delivery_address_choice,
+      general.delivery_address,
+      general.delivery_comment,
+      general.technical_file_name,
+      status,
+      orderId,
+      userId,
+    ]
+  );
+}
+
+async function getSagePortalConnector() {
+  const row = await get(`SELECT * FROM connector_settings WHERE connector_key = 'sage_portal'`);
+  const config = row ? normalizeConnectorConfig(JSON.parse(row.config_json || "{}")) : normalizeConnectorConfig();
+  return { row, config, enabled: Boolean(row?.enabled) };
+}
+
+function assertSageConfig(connector) {
+  if (!connector.enabled) throw new Error("Connecteur Sage désactivé");
+  if (connector.config.type !== "postgres") throw new Error("Seul le mode PostgreSQL SageSimu est supporté pour ce flux");
+  if (!connector.config.host || !connector.config.database) throw new Error("Configuration SageSimu incomplète");
+}
+
+async function withSagePool(callback) {
+  const connector = await getSagePortalConnector();
+  assertSageConfig(connector);
+  const pool = new Pool({
+    host: connector.config.host,
+    port: connector.config.port,
+    database: connector.config.database,
+    user: connector.config.user,
+    password: connector.config.password,
+    ssl: connector.config.ssl,
+  });
+
+  try {
+    return await callback(pool, connector.config);
+  } finally {
+    await pool.end();
+  }
+}
+
+async function testSagePortalConnection() {
+  return withSagePool(async (pool) => {
+    const result = await pool.query("SELECT 1 AS ok");
+    return { ok: result.rows[0]?.ok === 1 };
+  });
+}
+
+function sageDocumentPiece(order) {
+  return order.sage_order_number || order.order_number || `TP-${order.id}`;
+}
+
+function sageCustomerCode(order, client) {
+  return client?.sage_customer_code || client?.customer_code || order.customer_code;
+}
+
+function orderLineLabel(order) {
+  return [
+    order.material,
+    order.yarn_count,
+    order.ply_number ? `${order.ply_number} plis` : null,
+    order.color,
+  ].filter(Boolean).join(" - ") || "Commande filature";
+}
+
+function legacyOrderAsLine(order) {
+  if (!order) return null;
+  return {
+    id: null,
+    portal_order_id: order.id,
+    line_number: 1,
+    application_type: order.application_type || order.destination_usage || null,
+    material_family: order.material_family || order.material || null,
+    material_quality: order.material_quality || null,
+    count_system: order.count_system || (order.dtex ? "dtex" : "Nm"),
+    yarn_count_nm: order.count_system === "dtex" ? null : order.yarn_count || null,
+    dtex: order.dtex || null,
+    custom_count: order.custom_count || null,
+    ply_number: order.ply_number || null,
+    twist_type: order.twist_type || order.twist || null,
+    twist_direction: order.twist_direction || null,
+    finish: order.finish || null,
+    color_mode: order.color_mode || null,
+    color_name: order.color || null,
+    color_reference: order.color_reference || null,
+    dyeing_required: order.dyeing_required || 0,
+    dyeing_comment: order.dyeing_comment || null,
+    packaging: order.packaging || order.conditioning || null,
+    quantity_kg: order.quantity_kg || null,
+    meterage_per_unit: order.meterage_per_unit || null,
+    tolerance_percent: order.tolerance_percent || null,
+    partial_delivery_allowed: order.partial_delivery_allowed || 0,
+    production_comment: order.production_comment || order.comment || null,
+  };
+}
+
+async function getPortalOrderLines(order) {
+  const lines = await all(
+    `SELECT * FROM portal_order_lines WHERE portal_order_id = ? ORDER BY line_number ASC, id ASC`,
+    [order.id]
+  );
+  if (lines.length) return lines;
+  const legacyLine = legacyOrderAsLine(order);
+  return legacyLine && (legacyLine.material_family || legacyLine.quantity_kg || legacyLine.application_type) ? [legacyLine] : [];
+}
+
+function orderLineLabelFromLine(line) {
+  const count = line.count_system === "dtex"
+    ? line.dtex && `${line.dtex} dtex`
+    : line.yarn_count_nm || line.custom_count;
+  return [
+    line.material_family,
+    count,
+    line.ply_number ? `${line.ply_number} plis` : null,
+    line.color_name || line.color_mode,
+  ].filter(Boolean).join(" - ") || "Configuration fil";
+}
+
+function quotePgIdentifier(identifier) {
+  return `"${String(identifier).replace(/"/g, '""')}"`;
+}
+
+async function getPgTableColumns(db, tableName) {
+  const result = await db.query(
+    `
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = $1
+    `,
+    [tableName]
+  );
+  return new Set(result.rows.map((row) => row.column_name));
+}
+
+function filterPgValues(columns, valuesByColumn) {
+  return Object.entries(valuesByColumn).filter(([column]) => columns.has(column));
+}
+
+async function insertPgRow(db, tableName, valuesByColumn, options = {}) {
+  const columns = await getPgTableColumns(db, tableName);
+  const entries = filterPgValues(columns, valuesByColumn);
+  if (!entries.length) throw new Error(`Aucune colonne compatible trouvée pour ${tableName}`);
+
+  const columnSql = entries.map(([column]) => quotePgIdentifier(column)).join(", ");
+  const placeholders = entries.map((_, index) => `$${index + 1}`).join(", ");
+  const values = entries.map(([, value]) => value);
+  let conflictSql = "";
+
+  if (options.conflictColumn && columns.has(options.conflictColumn)) {
+    const updateColumns = (options.updateColumns || [])
+      .filter((column) => columns.has(column) && column !== options.conflictColumn && entries.some(([entryColumn]) => entryColumn === column));
+    conflictSql = updateColumns.length
+      ? ` ON CONFLICT (${quotePgIdentifier(options.conflictColumn)}) DO UPDATE SET ${updateColumns
+        .map((column) => `${quotePgIdentifier(column)} = EXCLUDED.${quotePgIdentifier(column)}`)
+        .join(", ")}`
+      : ` ON CONFLICT (${quotePgIdentifier(options.conflictColumn)}) DO NOTHING`;
+  }
+
+  await db.query(
+    `INSERT INTO ${quotePgIdentifier(tableName)} (${columnSql}) VALUES (${placeholders})${conflictSql}`,
+    values
+  );
+}
+
+async function updatePgRows(db, tableName, valuesByColumn, whereColumn, whereValue) {
+  const columns = await getPgTableColumns(db, tableName);
+  if (!columns.has(whereColumn)) return false;
+  const entries = filterPgValues(columns, valuesByColumn).filter(([column]) => column !== whereColumn);
+  if (!entries.length) return false;
+
+  const assignments = entries.map(([column], index) => `${quotePgIdentifier(column)} = $${index + 1}`).join(", ");
+  const values = entries.map(([, value]) => value);
+  values.push(whereValue);
+
+  const result = await db.query(
+    `UPDATE ${quotePgIdentifier(tableName)} SET ${assignments} WHERE ${quotePgIdentifier(whereColumn)} = $${values.length}`,
+    values
+  );
+  return result.rowCount > 0;
+}
+
+async function ensureGenericSageArticle(db) {
+  const columns = await getPgTableColumns(db, "F_ARTICLE");
+  if (!columns.has("AR_Ref")) return;
+
+  await insertPgRow(
+    db,
+    "F_ARTICLE",
+    {
+      AR_Ref: "FIL-SPECIFIQUE",
+      AR_Design: "Fil spécifique portail client",
+      PORTAL_GENERIC: true,
+    },
+    {
+      conflictColumn: "AR_Ref",
+      updateColumns: ["AR_Design", "PORTAL_GENERIC"],
+    }
+  );
+}
+
+async function upsertSageCustomer(pool, client, config) {
+  const customerCode = client.sage_customer_code || client.customer_code;
+  if (!customerCode) throw new Error("Code client Sage manquant");
+  const columns = await getPgTableColumns(pool, "F_COMPTET");
+
+  const customerValues = {
+    CT_Num: customerCode,
+    CT_Intitule: client.company_name,
+    CT_Adresse: client.billing_address || client.shipping_address || null,
+    CT_CodePostal: client.billing_postal_code || client.shipping_postal_code || null,
+    CT_Ville: client.billing_city || client.shipping_city || null,
+    CT_Pays: client.billing_country || client.shipping_country || null,
+    CT_Email: client.email || client.contact_email || null,
+    CT_Telephone: client.phone || client.contact_phone || null,
+    CT_NumTVA: client.vat_number || null,
+    CT_Type: 0,
+    PORTAL_CLIENT_ID: client.id || null,
+    PORTAL_CLIENT_EMAIL: client.email || client.contact_email || null,
+    PORTAL_VAT_NUMBER: client.vat_number || null,
+  };
+
+  if (columns.has("CT_Num")) {
+    const existing = await pool.query(`SELECT "CT_Num" FROM "F_COMPTET" WHERE "CT_Num" = $1`, [customerCode]);
+    if (existing.rowCount > 0) {
+      await updatePgRows(pool, "F_COMPTET", customerValues, "CT_Num", customerCode);
+      return customerCode;
+    }
+  } else if (columns.has("PORTAL_CLIENT_ID") && client.id) {
+    const existing = await pool.query(`SELECT "PORTAL_CLIENT_ID" FROM "F_COMPTET" WHERE "PORTAL_CLIENT_ID" = $1`, [client.id]);
+    if (existing.rowCount > 0) {
+      await updatePgRows(pool, "F_COMPTET", customerValues, "PORTAL_CLIENT_ID", client.id);
+      return customerCode;
+    }
+  }
+
+  if (config.outbound?.createCustomerEnabled === false) {
+    throw new Error(`Client ${customerCode} absent dans SageSimu et création client désactivée`);
+  }
+
+  await insertPgRow(pool, "F_COMPTET", customerValues, {
+    conflictColumn: "CT_Num",
+    updateColumns: [
+      "CT_Intitule",
+      "CT_Adresse",
+      "CT_CodePostal",
+      "CT_Ville",
+      "CT_Pays",
+      "CT_Email",
+      "CT_Telephone",
+      "CT_NumTVA",
+      "PORTAL_CLIENT_ID",
+      "PORTAL_CLIENT_EMAIL",
+      "PORTAL_VAT_NUMBER",
+    ],
+  });
+
+  return customerCode;
+}
+
+async function createSageOrderForPortalOrder(pool, actionPayload, config) {
+  if (config.outbound?.createOrderEnabled === false) throw new Error("Création commande Sage désactivée");
+
+  const order = await get(`SELECT * FROM portal_orders WHERE id = ?`, [actionPayload.portalOrderId || actionPayload.entityId]);
+  if (!order) throw new Error("Commande portail introuvable");
+  if (order.sage_order_number) {
+    return { sageOrderNumber: order.sage_order_number, alreadySent: true };
+  }
+
+  const client = await get(`SELECT * FROM portal_clients WHERE id = ? OR customer_code = ?`, [order.client_id || -1, order.customer_code]);
+  if (!client) throw new Error("Client portail introuvable");
+
+  const piece = sageDocumentPiece(order);
+  const customerCode = await upsertSageCustomer(pool, client, config);
+  const docColumns = await getPgTableColumns(pool, "F_DOCENTETE");
+  if (docColumns.has("DO_Piece")) {
+    const existing = await pool.query(`SELECT "DO_Piece" FROM "F_DOCENTETE" WHERE "DO_Piece" = $1`, [piece]);
+    if (existing.rowCount > 0) {
+      return { sageOrderNumber: piece, alreadySent: true };
+    }
+  } else if (docColumns.has("PORTAL_ORDER_ID")) {
+    const existing = await pool.query(`SELECT "PORTAL_ORDER_ID" FROM "F_DOCENTETE" WHERE "PORTAL_ORDER_ID" = $1`, [order.id]);
+    if (existing.rowCount > 0) {
+      return { sageOrderNumber: piece, alreadySent: true };
+    }
+  }
+
+  const sageClient = await pool.connect();
+  try {
+    await sageClient.query("BEGIN");
+    await ensureGenericSageArticle(sageClient);
+    await insertPgRow(
+      sageClient,
+      "F_DOCENTETE",
+      {
+        DO_Piece: piece,
+        DO_Type: 1,
+        DO_Date: new Date().toISOString().slice(0, 10),
+        DO_Tiers: customerCode,
+        DO_Ref: order.client_reference || order.order_number,
+        DO_Statut: 2,
+        DO_TotalHT: null,
+        DO_TotalTTC: null,
+        DO_DateLivr: order.requested_delivery_date || null,
+        PORTAL_ORDER_ID: order.id,
+        PORTAL_ORDER_NUMBER: order.order_number || null,
+        PORTAL_CUSTOMER_REFERENCE: order.client_reference || null,
+        PORTAL_STATUS: order.status || null,
+        PORTAL_URGENT: order.urgency === "urgent",
+        PORTAL_GENERAL_COMMENT: order.general_comment || order.comment || null,
+        PORTAL_CREATED_AT: order.created_at || null,
+      },
+      {
+        conflictColumn: "DO_Piece",
+        updateColumns: [
+          "DO_Tiers",
+          "DO_Ref",
+          "DO_Statut",
+          "DO_DateLivr",
+          "PORTAL_ORDER_ID",
+          "PORTAL_ORDER_NUMBER",
+          "PORTAL_CUSTOMER_REFERENCE",
+          "PORTAL_STATUS",
+          "PORTAL_URGENT",
+          "PORTAL_GENERAL_COMMENT",
+          "PORTAL_CREATED_AT",
+        ],
+      }
+    );
+
+    const orderLines = await getPortalOrderLines(order);
+    const linesToSend = orderLines.length ? orderLines : [legacyOrderAsLine(order)];
+    for (const line of linesToSend.filter(Boolean)) {
+      await insertPgRow(sageClient, "F_DOCLIGNE", {
+        DO_Piece: piece,
+        DO_Type: 1,
+        AR_Ref: "FIL-SPECIFIQUE",
+        DL_Design: orderLineLabelFromLine(line) || orderLineLabel(order),
+        DL_Qte: line.quantity_kg || 0,
+        DL_PrixUnitaire: null,
+        DL_MontantHT: null,
+        DL_Largeur: null,
+        DL_Longueur: null,
+        DL_Couleur: line.color_name || line.color_mode || order.color || null,
+        DL_Lot: `${order.client_reference || order.order_number}-L${line.line_number || 1}`,
+        PORTAL_LINE_ID: line.id || null,
+        PORTAL_ORDER_ID: order.id,
+        PORTAL_LINE_NUMBER: line.line_number || null,
+        PORTAL_APPLICATION_TYPE: line.application_type || null,
+        PORTAL_MATERIAL_FAMILY: line.material_family || null,
+        PORTAL_MATERIAL_QUALITY: line.material_quality || null,
+        PORTAL_COUNT_SYSTEM: line.count_system || null,
+        PORTAL_YARN_COUNT_NM: line.yarn_count_nm || null,
+        PORTAL_DTEX: line.dtex || null,
+        PORTAL_PLY_NUMBER: line.ply_number || null,
+        PORTAL_TWIST_TYPE: line.twist_type || null,
+        PORTAL_TWIST_DIRECTION: line.twist_direction || null,
+        PORTAL_FINISH: line.finish || null,
+        PORTAL_COLOR_MODE: line.color_mode || null,
+        PORTAL_COLOR_NAME: line.color_name || null,
+        PORTAL_COLOR_REFERENCE: line.color_reference || null,
+        PORTAL_DYEING_REQUIRED: Boolean(line.dyeing_required),
+        PORTAL_PACKAGING: line.packaging || null,
+        PORTAL_QUANTITY_KG: line.quantity_kg || null,
+        PORTAL_TOLERANCE_PERCENT: line.tolerance_percent || null,
+        PORTAL_PRODUCTION_COMMENT: line.production_comment || null,
+      });
+    }
+
+    await sageClient.query("COMMIT");
+    return { sageOrderNumber: piece, alreadySent: false };
+  } catch (error) {
+    await sageClient.query("ROLLBACK");
+    throw error;
+  } finally {
+    sageClient.release();
+  }
+}
+
+async function insertStatusHistory(orderId, oldStatus, newStatus, source, message) {
+  await run(
+    `INSERT INTO portal_order_status_history (portal_order_id, old_status, new_status, source, message) VALUES (?, ?, ?, ?, ?)`,
+    [orderId, oldStatus, newStatus, source, message]
+  );
+}
+
+async function insertSyncLog(system, direction, status, message, entityType = null, entityId = null) {
+  await run(
+    `INSERT INTO sync_logs (system, direction, status, message, entity_type, entity_id) VALUES (?, ?, ?, ?, ?, ?)`,
+    [system, direction, status, message, entityType, entityId]
+  );
+}
+
+async function scheduleSageOrderAction(order, reason = "Commande validée") {
+  if (order.sage_order_number) return { actionId: null, skipped: true, reason: "Commande déjà envoyée vers Sage" };
+  if (order.status === "draft") return { actionId: null, skipped: true, reason: "Brouillon non transmissible vers Sage" };
+
+  const existing = await get(
+    `
+      SELECT id FROM erp_pending_actions
+      WHERE action_type = 'CREATE_SAGE_ORDER'
+        AND entity_type = 'portal_order'
+        AND entity_id = ?
+        AND status IN ('pending', 'PENDING', 'processing')
+      ORDER BY id DESC
+      LIMIT 1
+    `,
+    [String(order.id)]
+  );
+
+  if (existing) return { actionId: existing.id, skipped: true, reason: "Action Sage déjà en attente" };
+
+  const actionId = await createPendingAction("CREATE_SAGE_ORDER", {
+    portalOrderId: order.id,
+    entityType: "portal_order",
+    entityId: order.id,
+    orderNumber: order.order_number,
+    customerCode: order.customer_code,
+    reason,
+  });
+
+  await run(
+    `UPDATE portal_orders SET status = 'pending_sage_sync', sync_status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    [order.id]
+  );
+  await insertStatusHistory(order.id, order.status, "pending_sage_sync", "admin", "Action d'envoi Sage créée");
+  return { actionId, skipped: false };
+}
+
+async function processPendingSageActions() {
+  const actions = await all(
+    `
+      SELECT * FROM erp_pending_actions
+      WHERE action_type = 'CREATE_SAGE_ORDER'
+        AND status IN ('pending', 'PENDING', 'failed', 'ERROR')
+      ORDER BY id ASC
+      LIMIT 20
+    `
+  );
+  const results = [];
+
+  for (const action of actions) {
+    const payload = JSON.parse(action.payload_json || "{}");
+    await run(`UPDATE erp_pending_actions SET status = 'processing', locked_at = CURRENT_TIMESTAMP WHERE id = ?`, [action.id]);
+
+    try {
+      const result = await withSagePool((pool, config) => createSageOrderForPortalOrder(pool, payload, config));
+      const order = await get(`SELECT * FROM portal_orders WHERE id = ?`, [payload.portalOrderId]);
+      await run(
+        `
+          UPDATE erp_pending_actions
+          SET status = 'DONE', result_json = ?, processed_at = CURRENT_TIMESTAMP, error_message = NULL
+          WHERE id = ?
+        `,
+        [JSON.stringify(result), action.id]
+      );
+      await run(
+        `
+          UPDATE portal_orders
+          SET status = 'sent_to_sage', sage_order_number = ?, sync_status = 'success', updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `,
+        [result.sageOrderNumber, payload.portalOrderId]
+      );
+      if (order && order.status !== "sent_to_sage") {
+        await insertStatusHistory(order.id, order.status, "sent_to_sage", "sage", `Commande créée dans SageSimu : ${result.sageOrderNumber}`);
+      }
+      await insertDocumentIfMissing(payload.portalOrderId, "order_confirmation", `confirmation-${result.sageOrderNumber}.pdf`, "sage", result.sageOrderNumber);
+      await insertSyncLog("SAGE_PORTAL", "website_to_sage", "success", `Commande ${payload.orderNumber || payload.portalOrderId} envoyée vers SageSimu`, "portal_order", String(payload.portalOrderId));
+      results.push({ actionId: action.id, success: true, result });
+    } catch (error) {
+      await run(
+        `
+          UPDATE erp_pending_actions
+          SET status = 'ERROR', error_message = ?, processed_at = CURRENT_TIMESTAMP, retry_count = retry_count + 1
+          WHERE id = ?
+        `,
+        [error.message, action.id]
+      );
+      const order = await get(`SELECT * FROM portal_orders WHERE id = ?`, [payload.portalOrderId]);
+      if (order) {
+        await run(
+          `UPDATE portal_orders SET status = 'sage_sync_failed', sync_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+          [order.id]
+        );
+        if (order.status !== "sage_sync_failed") {
+          await insertStatusHistory(order.id, order.status, "sage_sync_failed", "sage", "Erreur envoi SageSimu");
+        }
+      }
+      await insertSyncLog("SAGE_PORTAL", "website_to_sage", "error", error.message, "portal_order", String(payload.portalOrderId || ""));
+      results.push({ actionId: action.id, success: false, error: error.message });
+    }
+  }
+
+  return {
+    checked: actions.length,
+    processed: results.filter((item) => item.success).length,
+    failed: results.filter((item) => !item.success).length,
+    results,
+  };
+}
+
+function mapSageStatusToPortal(status) {
+  const numeric = Number(status);
+  if (numeric >= 5) return "delivered";
+  if (numeric === 4) return "ready";
+  if (numeric === 3) return "in_production";
+  if (numeric === 2) return "sent_to_sage";
+  return "pending_sage_sync";
+}
+
+async function insertDocumentIfMissing(orderId, documentType, fileName, source, sageReference) {
+  const existing = await get(
+    `SELECT id FROM portal_documents WHERE order_id = ? AND document_type = ? AND COALESCE(sage_reference, '') = COALESCE(?, '')`,
+    [orderId, documentType, sageReference || ""]
+  );
+  if (existing) return null;
+  const result = await run(
+    `
+      INSERT INTO portal_documents (order_id, filename, document_type, storage_url, source, sage_reference, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `,
+    [orderId, fileName, documentType, null, source, sageReference || null]
+  );
+  return result.id;
+}
+
+async function syncSageInboundStatuses() {
+  const orders = await all(
+    `
+      SELECT * FROM portal_orders
+      WHERE sage_order_number IS NOT NULL
+        AND sage_order_number <> ''
+        AND status NOT IN ('delivered', 'cancelled')
+      ORDER BY id ASC
+    `
+  );
+  const results = [];
+
+  await withSagePool(async (pool) => {
+    for (const order of orders) {
+      try {
+        const sage = await pool.query(
+          `
+            SELECT "DO_Piece", "DO_Statut", "DO_TotalHT", "DO_TotalTTC", "DO_DateLivr", "DO_Ref"
+            FROM "F_DOCENTETE"
+            WHERE "DO_Piece" = $1
+          `,
+          [order.sage_order_number]
+        );
+        const row = sage.rows[0];
+        if (!row) {
+          results.push({ orderId: order.id, updated: false, reason: "Commande absente de SageSimu" });
+          continue;
+        }
+
+        const nextStatus = mapSageStatusToPortal(row.DO_Statut ?? row.do_statut);
+        const updateFields = [
+          "status = ?",
+          "sync_status = 'synced'",
+          "updated_at = CURRENT_TIMESTAMP",
+        ];
+        const updateValues = [nextStatus];
+
+        if (row.DO_TotalHT !== undefined || row.do_totalht !== undefined) {
+          updateFields.push("invoice_total_ht = ?");
+          updateValues.push(row.DO_TotalHT ?? row.do_totalht);
+        }
+        if (row.DO_TotalTTC !== undefined || row.do_totalttc !== undefined) {
+          updateFields.push("invoice_total_ttc = ?");
+          updateValues.push(row.DO_TotalTTC ?? row.do_totalttc);
+        }
+        updateValues.push(order.id);
+        await run(`UPDATE portal_orders SET ${updateFields.join(", ")} WHERE id = ?`, updateValues);
+
+        if (order.status !== nextStatus) {
+          await insertStatusHistory(order.id, order.status, nextStatus, "sage", "Statut synchronisé depuis SageSimu");
+        }
+
+        await insertDocumentIfMissing(order.id, "order_confirmation", `confirmation-${order.sage_order_number}.pdf`, "sage", order.sage_order_number);
+        if (["ready", "delivered"].includes(nextStatus)) {
+          await insertDocumentIfMissing(order.id, "delivery_note", `bon-livraison-${order.sage_order_number}.pdf`, "sage", order.sage_order_number);
+        }
+        if (nextStatus === "delivered") {
+          await insertDocumentIfMissing(order.id, "invoice", `facture-${order.sage_order_number}.pdf`, "sage", order.sage_order_number);
+        }
+
+        results.push({ orderId: order.id, sageOrderNumber: order.sage_order_number, updated: order.status !== nextStatus, status: nextStatus });
+      } catch (error) {
+        results.push({ orderId: order.id, updated: false, error: error.message });
+        await insertSyncLog("SAGE_PORTAL", "sage_to_website", "error", error.message, "portal_order", String(order.id));
+      }
+    }
+  });
+
+  const updated = results.filter((item) => item.updated).length;
+  await insertSyncLog("SAGE_PORTAL", "sage_to_website", "success", `${updated} statut(s) mis à jour depuis SageSimu`, null, null);
+  return { checked: orders.length, updated, results };
 }
 
 async function initDb() {
@@ -229,6 +1065,39 @@ async function initDb() {
       specs_json TEXT NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(order_id) REFERENCES portal_orders(id)
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS portal_order_lines (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      portal_order_id INTEGER NOT NULL,
+      line_number INTEGER NOT NULL,
+      application_type TEXT,
+      material_family TEXT,
+      material_quality TEXT,
+      count_system TEXT,
+      yarn_count_nm TEXT,
+      dtex TEXT,
+      custom_count TEXT,
+      ply_number TEXT,
+      twist_type TEXT,
+      twist_direction TEXT,
+      finish TEXT,
+      color_mode TEXT,
+      color_name TEXT,
+      color_reference TEXT,
+      dyeing_required INTEGER DEFAULT 0,
+      dyeing_comment TEXT,
+      packaging TEXT,
+      quantity_kg REAL,
+      meterage_per_unit TEXT,
+      tolerance_percent REAL,
+      partial_delivery_allowed INTEGER DEFAULT 0,
+      production_comment TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(portal_order_id) REFERENCES portal_orders(id)
     )
   `);
 
@@ -390,6 +1259,7 @@ async function initDb() {
 
   await run(`CREATE INDEX IF NOT EXISTS idx_portal_orders_customer ON portal_orders(customer_code)`);
   await run(`CREATE INDEX IF NOT EXISTS idx_portal_orders_status ON portal_orders(status)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_portal_order_lines_order ON portal_order_lines(portal_order_id)`);
   await run(`CREATE INDEX IF NOT EXISTS idx_erp_pending_status ON erp_pending_actions(status)`);
 
   await addColumnIfMissing("erp_pending_actions", "locked_at", "DATETIME");
@@ -422,6 +1292,28 @@ async function initDb() {
   await addColumnIfMissing("portal_orders", "color_reference", "TEXT");
   await addColumnIfMissing("portal_orders", "tolerance_percent", "REAL");
   await addColumnIfMissing("portal_orders", "partial_delivery_allowed", "INTEGER DEFAULT 0");
+  await addColumnIfMissing("portal_orders", "application_type", "TEXT");
+  await addColumnIfMissing("portal_orders", "material_family", "TEXT");
+  await addColumnIfMissing("portal_orders", "material_quality", "TEXT");
+  await addColumnIfMissing("portal_orders", "count_system", "TEXT");
+  await addColumnIfMissing("portal_orders", "dtex", "TEXT");
+  await addColumnIfMissing("portal_orders", "custom_count", "TEXT");
+  await addColumnIfMissing("portal_orders", "twist_type", "TEXT");
+  await addColumnIfMissing("portal_orders", "twist_direction", "TEXT");
+  await addColumnIfMissing("portal_orders", "finish", "TEXT");
+  await addColumnIfMissing("portal_orders", "color_mode", "TEXT");
+  await addColumnIfMissing("portal_orders", "dyeing_comment", "TEXT");
+  await addColumnIfMissing("portal_orders", "packaging", "TEXT");
+  await addColumnIfMissing("portal_orders", "meterage_per_unit", "TEXT");
+  await addColumnIfMissing("portal_orders", "production_comment", "TEXT");
+  await addColumnIfMissing("portal_orders", "delivery_address_choice", "TEXT");
+  await addColumnIfMissing("portal_orders", "delivery_address", "TEXT");
+  await addColumnIfMissing("portal_orders", "delivery_comment", "TEXT");
+  await addColumnIfMissing("portal_orders", "technical_file_name", "TEXT");
+  await addColumnIfMissing("portal_orders", "invoice_number", "TEXT");
+  await addColumnIfMissing("portal_orders", "invoice_date", "TEXT");
+  await addColumnIfMissing("portal_orders", "invoice_total_ht", "REAL");
+  await addColumnIfMissing("portal_orders", "invoice_total_ttc", "REAL");
   await addColumnIfMissing("portal_users", "status", "TEXT DEFAULT 'active'");
   await addColumnIfMissing("portal_users", "client_id", "INTEGER");
   await addColumnIfMissing("portal_users", "last_login_at", "DATETIME");
@@ -430,6 +1322,8 @@ async function initDb() {
   await addColumnIfMissing("portal_users", "last_password_reset_at", "DATETIME");
   await addColumnIfMissing("sync_logs", "entity_type", "TEXT");
   await addColumnIfMissing("sync_logs", "entity_id", "TEXT");
+  await addColumnIfMissing("portal_documents", "source", "TEXT");
+  await addColumnIfMissing("portal_documents", "sage_reference", "TEXT");
 
   await run(
     `INSERT OR IGNORE INTO portal_clients (customer_code, company_name, contact_email) VALUES (?, ?, ?)`,
@@ -643,7 +1537,32 @@ async function listClientOrders(req, res) {
   try {
     const client = await getUserClient(req.user);
     if (!client) return res.status(404).json({ error: "Client introuvable" });
-    const orders = await all(`SELECT * FROM portal_orders WHERE client_id = ? OR customer_code = ? ORDER BY id DESC`, [client.id, client.customer_code]);
+    const orders = await all(
+      `
+        SELECT
+          o.*,
+          COALESCE(line_stats.line_count, CASE WHEN o.quantity_kg IS NOT NULL THEN 1 ELSE 0 END) AS line_count,
+          COALESCE(line_stats.total_quantity_kg, o.quantity_kg, 0) AS total_quantity_kg,
+          first_line.application_type AS first_application_type,
+          first_line.material_family AS first_material_family,
+          first_line.material_quality AS first_material_quality,
+          first_line.yarn_count_nm AS first_yarn_count_nm,
+          first_line.dtex AS first_dtex,
+          first_line.custom_count AS first_custom_count,
+          first_line.color_name AS first_color_name,
+          first_line.packaging AS first_packaging
+        FROM portal_orders o
+        LEFT JOIN (
+          SELECT portal_order_id, COUNT(*) AS line_count, SUM(quantity_kg) AS total_quantity_kg
+          FROM portal_order_lines
+          GROUP BY portal_order_id
+        ) line_stats ON line_stats.portal_order_id = o.id
+        LEFT JOIN portal_order_lines first_line ON first_line.portal_order_id = o.id AND first_line.line_number = 1
+        WHERE o.client_id = ? OR o.customer_code = ?
+        ORDER BY o.id DESC
+      `,
+      [client.id, client.customer_code]
+    );
     res.json(orders);
   } catch (error) {
     console.error("Erreur lecture commandes :", error.message);
@@ -657,27 +1576,16 @@ app.get("/api/orders", authRequired, listClientOrders);
 async function createPortalOrder(req, res) {
   try {
     const body = req.body || {};
-    const normalized = {
-      ...body,
-      client_reference: body.client_reference || body.customer_reference || null,
-      yarn_count: body.yarn_count || body.yarn_count_nm || null,
-      ply_number: body.ply_number !== undefined ? String(body.ply_number) : null,
-      urgency: body.urgency || (body.urgent ? "urgent" : "normal"),
-      tolerance: body.tolerance || (body.tolerance_percent !== undefined ? String(body.tolerance_percent) : null),
-      tolerance_percent: body.tolerance_percent !== undefined && body.tolerance_percent !== "" ? Number(body.tolerance_percent) : null,
-      comment: body.comment || body.commentaire_technique || null,
-      requested_date: body.requested_date || null,
-      requested_delivery_date: body.requested_delivery_date || null,
-    };
-    const missing = requireFields(normalized, ["client_reference", "requested_date", "material", "yarn_count", "quantity_kg", "requested_delivery_date"]);
-    if (missing.length) return res.status(400).json({ error: `Champs manquants : ${missing.join(", ")}` });
+    const status = body.status === "draft" ? "draft" : "submitted";
+    const { general, normalizedLines, firstLine, totalQuantity } = preparePortalOrderPayload(body, { allowEmptyLines: status === "draft" });
+    const validationError = status === "submitted" ? validateSubmittedPortalOrder(general, normalizedLines) : null;
+    if (validationError) return res.status(400).json(validationError);
 
     const client = req.user.role === "client" ? await getUserClient(req.user) : null;
-    const customerCode = client?.customer_code || normalized.customer_code;
-    const clientId = client?.id || normalized.client_id || null;
+    const customerCode = client?.customer_code || body.customer_code;
+    const clientId = client?.id || body.client_id || null;
     if (!customerCode) return res.status(400).json({ error: "customer_code requis" });
 
-    const status = "submitted";
     const orderNumber = await generateOrderNumber();
     const result = await run(
       `
@@ -703,53 +1611,93 @@ async function createPortalOrder(req, res) {
           tolerance_percent,
           comment,
           partial_delivery_allowed,
+          application_type,
+          material_family,
+          material_quality,
+          count_system,
+          dtex,
+          custom_count,
+          twist_type,
+          twist_direction,
+          finish,
+          color_mode,
+          dyeing_comment,
+          packaging,
+          meterage_per_unit,
+          production_comment,
+          delivery_address_choice,
+          delivery_address,
+          delivery_comment,
+          technical_file_name,
           status,
           created_by,
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `,
       [
         orderNumber,
         clientId,
         customerCode,
-        normalized.client_reference || null,
-        normalized.material,
-        normalized.yarn_count,
-        normalized.ply_number,
-        normalized.twist || null,
-        normalized.color || null,
-        normalized.color_reference || null,
-        normalized.dyeing_required ? 1 : 0,
-        normalized.conditioning || null,
-        Number(normalized.quantity_kg),
-        normalized.requested_date || null,
-        normalized.requested_delivery_date || null,
-        normalized.urgency || "normal",
-        normalized.destination_usage || null,
-        normalized.tolerance || null,
-        normalized.tolerance_percent,
-        normalized.comment || null,
-        normalized.partial_delivery_allowed ? 1 : 0,
+        general.client_reference,
+        firstLine.material_family || null,
+        firstLine.count_value || null,
+        firstLine.ply_number || null,
+        firstLine.twist_type || null,
+        firstLine.color_name || firstLine.color_mode || null,
+        firstLine.color_reference || null,
+        firstLine.dyeing_required || 0,
+        firstLine.packaging || null,
+        totalQuantity,
+        general.requested_delivery_date,
+        general.requested_delivery_date,
+        general.urgent ? "urgent" : "normal",
+        firstLine.application_type || null,
+        firstLine.tolerance_percent !== null && firstLine.tolerance_percent !== undefined ? String(firstLine.tolerance_percent) : null,
+        firstLine.tolerance_percent || null,
+        general.general_comment,
+        firstLine.partial_delivery_allowed || 0,
+        firstLine.application_type || null,
+        firstLine.material_family || null,
+        firstLine.material_quality || null,
+        firstLine.count_system || null,
+        firstLine.dtex || null,
+        firstLine.custom_count || null,
+        firstLine.twist_type || null,
+        firstLine.twist_direction || null,
+        firstLine.finish || null,
+        firstLine.color_mode || null,
+        firstLine.dyeing_comment || null,
+        firstLine.packaging || null,
+        firstLine.meterage_per_unit || null,
+        firstLine.production_comment || null,
+        general.delivery_address_choice,
+        general.delivery_address,
+        general.delivery_comment,
+        general.technical_file_name,
         status,
         req.user.sub,
       ]
     );
 
+    for (const [index, line] of normalizedLines.entries()) {
+      await insertPortalOrderLine(result.id, line, index);
+    }
+
     await run(
       `INSERT INTO portal_order_specs (order_id, specs_json) VALUES (?, ?)`,
-      [result.id, JSON.stringify({ ...normalized, raw_payload: body })]
+      [result.id, JSON.stringify({ ...general, lines: normalizedLines, raw_payload: body })]
     );
     await run(
       `INSERT INTO portal_order_status_history (portal_order_id, old_status, new_status, source, message) VALUES (?, ?, ?, ?, ?)`,
-      [result.id, null, status, "portal", "Commande créée depuis le portail"]
+      [result.id, null, status, "portal", status === "draft" ? "Brouillon enregistré depuis le portail" : "Demande envoyée depuis le portail"]
     );
 
     await auditLog({
       userId: req.user.sub,
       role: req.user.role,
-      action: "PORTAL_ORDER_CREATE",
+      action: status === "draft" ? "PORTAL_ORDER_DRAFT_CREATE" : "PORTAL_ORDER_CREATE",
       entityType: "portal_order",
       entityId: String(result.id),
       metadata: { orderNumber },
@@ -757,7 +1705,7 @@ async function createPortalOrder(req, res) {
     });
 
     const order = await get(`SELECT * FROM portal_orders WHERE id = ?`, [result.id]);
-    res.status(201).json({ order });
+    res.status(201).json({ order, lines: normalizedLines });
   } catch (error) {
     console.error("Erreur création commande portail :", error.message);
     res.status(500).json({ error: "Erreur création commande" });
@@ -899,9 +1847,10 @@ async function getClientOrderDetail(req, res) {
     }
 
     const specs = await all(`SELECT * FROM portal_order_specs WHERE order_id = ? ORDER BY id DESC`, [order.id]);
+    const lines = await getPortalOrderLines(order);
     const documents = await all(`SELECT * FROM portal_documents WHERE order_id = ? ORDER BY id DESC`, [order.id]);
     const messages = await all(`SELECT * FROM portal_messages WHERE order_id = ? ORDER BY id ASC`, [order.id]);
-    res.json({ order, specs, documents, messages });
+    res.json({ order, lines, specs, documents, messages });
   } catch (error) {
     res.status(500).json({ error: "Erreur lecture commande" });
   }
@@ -909,6 +1858,129 @@ async function getClientOrderDetail(req, res) {
 
 app.get("/api/client/orders/:id", authRequired, requireClient, getClientOrderDetail);
 app.get("/api/orders/:id", authRequired, getClientOrderDetail);
+
+async function getOwnedClientOrder(req, res) {
+  const order = await get(`SELECT * FROM portal_orders WHERE id = ?`, [req.params.id]);
+  if (!order) {
+    res.status(404).json({ error: "Demande introuvable" });
+    return null;
+  }
+  const client = await getUserClient(req.user);
+  if (!client || (order.client_id && order.client_id !== client.id) || (!order.client_id && order.customer_code !== client.customer_code)) {
+    res.status(403).json({ error: "Accès refusé" });
+    return null;
+  }
+  return { order, client };
+}
+
+app.put("/api/client/orders/:id", authRequired, requireClient, async (req, res) => {
+  try {
+    const owned = await getOwnedClientOrder(req, res);
+    if (!owned) return;
+    const { order } = owned;
+    if (order.status !== "draft") {
+      return res.status(403).json({ error: "Seuls les brouillons peuvent être modifiés." });
+    }
+
+    const nextStatus = req.body?.status === "submitted" ? "submitted" : "draft";
+    const { general, normalizedLines, firstLine, totalQuantity } = preparePortalOrderPayload(req.body || {}, { allowEmptyLines: nextStatus === "draft" });
+    const validationError = nextStatus === "submitted" ? validateSubmittedPortalOrder(general, normalizedLines) : null;
+    if (validationError) return res.status(400).json(validationError);
+
+    await updatePortalOrderRecord(order.id, general, firstLine, totalQuantity, nextStatus, req.user.sub);
+    await replacePortalOrderLines(order.id, normalizedLines);
+    await run(`INSERT INTO portal_order_specs (order_id, specs_json) VALUES (?, ?)`, [order.id, JSON.stringify({ ...general, lines: normalizedLines, raw_payload: req.body || {} })]);
+
+    if (nextStatus !== order.status) {
+      await insertStatusHistory(order.id, order.status, nextStatus, "portal", "Brouillon soumis depuis le portail");
+    }
+    await auditLog({
+      userId: req.user.sub,
+      role: req.user.role,
+      action: nextStatus === "submitted" ? "PORTAL_ORDER_DRAFT_SUBMIT" : "PORTAL_ORDER_DRAFT_UPDATE",
+      entityType: "portal_order",
+      entityId: String(order.id),
+      ip: req.ip,
+    });
+
+    res.json({ success: true, order: await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]), lines: await getPortalOrderLines({ id: order.id }) });
+  } catch (error) {
+    console.error("Erreur mise à jour brouillon :", error.message);
+    res.status(500).json({ error: "Erreur mise à jour brouillon" });
+  }
+});
+
+app.post("/api/client/orders/:id/submit", authRequired, requireClient, async (req, res) => {
+  try {
+    const owned = await getOwnedClientOrder(req, res);
+    if (!owned) return;
+    const { order } = owned;
+    if (order.status !== "draft") {
+      return res.status(403).json({ error: "Seuls les brouillons peuvent être soumis depuis cette route." });
+    }
+
+    const lines = await getPortalOrderLines(order);
+    const general = {
+      client_reference: order.client_reference || null,
+      requested_delivery_date: order.requested_delivery_date || order.requested_date || null,
+      delivery_address_choice: order.delivery_address_choice || "profile",
+      delivery_address: order.delivery_address || null,
+      urgent: order.urgency === "urgent",
+      general_comment: order.comment || null,
+      delivery_comment: order.delivery_comment || null,
+      technical_file_name: order.technical_file_name || null,
+    };
+    const normalizedLines = lines.map(normalizeOrderLine);
+    const validationError = validateSubmittedPortalOrder(general, normalizedLines);
+    if (validationError) return res.status(400).json(validationError);
+
+    await run(`UPDATE portal_orders SET status = 'submitted', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [order.id]);
+    await insertStatusHistory(order.id, order.status, "submitted", "portal", "Brouillon soumis depuis le portail");
+    await auditLog({ userId: req.user.sub, role: req.user.role, action: "PORTAL_ORDER_DRAFT_SUBMIT", entityType: "portal_order", entityId: String(order.id), ip: req.ip });
+    res.json({ success: true, order: await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]) });
+  } catch (error) {
+    console.error("Erreur soumission brouillon :", error.message);
+    res.status(500).json({ error: "Erreur soumission brouillon" });
+  }
+});
+
+app.delete("/api/client/orders/:id", authRequired, requireClient, async (req, res) => {
+  try {
+    const owned = await getOwnedClientOrder(req, res);
+    if (!owned) return;
+    const { order } = owned;
+    if (order.status !== "draft") return res.status(403).json({ error: "Seuls les brouillons peuvent être supprimés." });
+    await run(`DELETE FROM portal_order_lines WHERE portal_order_id = ?`, [order.id]);
+    await run(`DELETE FROM portal_order_specs WHERE order_id = ?`, [order.id]);
+    await run(`DELETE FROM portal_order_status_history WHERE portal_order_id = ?`, [order.id]);
+    await run(`DELETE FROM portal_orders WHERE id = ?`, [order.id]);
+    await auditLog({ userId: req.user.sub, role: req.user.role, action: "PORTAL_ORDER_DRAFT_DELETE", entityType: "portal_order", entityId: String(order.id), ip: req.ip });
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Erreur suppression brouillon :", error.message);
+    res.status(500).json({ error: "Erreur suppression brouillon" });
+  }
+});
+
+app.get("/api/client/documents", authRequired, requireClient, async (req, res) => {
+  try {
+    const client = await getUserClient(req.user);
+    if (!client) return res.status(404).json({ error: "Client introuvable" });
+    const documents = await all(
+      `
+        SELECT d.*, o.order_number, o.client_reference, o.status
+        FROM portal_documents d
+        JOIN portal_orders o ON o.id = d.order_id
+        WHERE o.client_id = ? OR o.customer_code = ?
+        ORDER BY d.id DESC
+      `,
+      [client.id, client.customer_code]
+    );
+    res.json(documents);
+  } catch (error) {
+    res.status(500).json({ error: "Erreur lecture documents" });
+  }
+});
 
 app.post("/api/orders/:id/document", authRequired, async (req, res) => {
   try {
@@ -1213,11 +2285,12 @@ app.post("/api/admin/users/:id/reset-password", authRequired, requireAdmin, asyn
 app.get("/api/admin/orders/:id", authRequired, requireAdmin, async (req, res) => {
   const order = await get(`SELECT o.*, c.company_name, c.contact_email FROM portal_orders o LEFT JOIN portal_clients c ON c.customer_code = o.customer_code WHERE o.id = ?`, [req.params.id]);
   if (!order) return res.status(404).json({ error: "Commande introuvable" });
+  const lines = await getPortalOrderLines(order);
   const specs = await all(`SELECT * FROM portal_order_specs WHERE order_id = ? ORDER BY id DESC`, [order.id]);
   const history = await all(`SELECT * FROM portal_order_status_history WHERE portal_order_id = ? ORDER BY id DESC`, [order.id]);
   const logs = await all(`SELECT * FROM sync_logs WHERE entity_type = 'portal_order' AND entity_id = ? ORDER BY id DESC`, [String(order.id)]);
   const documents = await all(`SELECT * FROM portal_documents WHERE order_id = ? ORDER BY id DESC`, [order.id]);
-  res.json({ order, specs, history, logs, documents });
+  res.json({ order, lines, specs, history, logs, documents });
 });
 
 app.patch("/api/admin/orders/:id/status", authRequired, requireAdmin, async (req, res) => {
@@ -1261,17 +2334,23 @@ app.patch("/api/admin/orders/:id/status", authRequired, requireAdmin, async (req
       [order.id, order.status, status, "admin", message || internalComment || null]
     );
 
+    let action = null;
+    if (status === "approved") {
+      const approvedOrder = await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]);
+      action = await scheduleSageOrderAction(approvedOrder, "Commande approuvée par l'administration");
+    }
+
     await auditLog({
       userId: req.user.sub,
       role: req.user.role,
       action: "ADMIN_ORDER_STATUS_UPDATE",
       entityType: "portal_order",
       entityId: String(order.id),
-      metadata: { oldStatus: order.status, newStatus: status, message: message || internalComment || null },
+      metadata: { oldStatus: order.status, newStatus: status, message: message || internalComment || null, action },
       ip: req.ip,
     });
 
-    res.json({ success: true, order: await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]) });
+    res.json({ success: true, action, order: await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]) });
   } catch (error) {
     console.error("Erreur changement statut commande :", error.message);
     res.status(500).json({ error: "Erreur changement statut commande" });
@@ -1279,12 +2358,17 @@ app.patch("/api/admin/orders/:id/status", authRequired, requireAdmin, async (req
 });
 
 app.post("/api/admin/orders/:id/force-sync", authRequired, requireAdmin, async (req, res) => {
-  const order = await get(`SELECT * FROM portal_orders WHERE id = ?`, [req.params.id]);
-  if (!order) return res.status(404).json({ error: "Commande introuvable" });
-  const actionId = await createPendingAction("CREATE_SAGE_ORDER", { portalOrderId: order.id, entityType: "portal_order", entityId: order.id, orderNumber: order.order_number, customerCode: order.customer_code, order });
-  await run(`UPDATE portal_orders SET sync_status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [order.id]);
-  await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_ORDER_FORCE_SYNC", entityType: "portal_order", entityId: String(order.id), metadata: { actionId }, ip: req.ip });
-  res.json({ success: true, actionId });
+  try {
+    const order = await get(`SELECT * FROM portal_orders WHERE id = ?`, [req.params.id]);
+    if (!order) return res.status(404).json({ error: "Commande introuvable" });
+    if (order.status === "draft") return res.status(400).json({ error: "Un brouillon ne peut pas être envoyé vers Sage." });
+    const action = await scheduleSageOrderAction(order, "Envoi Sage manuel");
+    const sync = await processPendingSageActions();
+    await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_ORDER_FORCE_SYNC", entityType: "portal_order", entityId: String(order.id), metadata: { action, sync }, ip: req.ip });
+    res.json({ success: true, actionId: action.actionId, sync });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Erreur envoi Sage" });
+  }
 });
 
 app.post("/api/admin/orders/:id/internal-comment", authRequired, requireAdmin, async (req, res) => {
@@ -1334,38 +2418,77 @@ app.put("/api/admin/connector-sage", authRequired, requireRoles("super_admin"), 
 });
 
 app.post("/api/admin/connector-sage/test", authRequired, requireRoles("super_admin"), async (req, res) => {
-  const row = await get(`SELECT * FROM connector_settings WHERE connector_key = 'sage_portal'`);
-  const config = row ? JSON.parse(row.config_json || "{}") : {};
-  const connected = Boolean(row?.enabled && config.host && config.database);
-  await run(`UPDATE connector_settings SET last_check_at = CURRENT_TIMESTAMP, last_error = ? WHERE connector_key = 'sage_portal'`, [connected ? null : "Configuration incomplète"]);
-  res.json({
-    connected,
-    status: connected ? "connected" : "disconnected",
-    checked_at: new Date().toISOString(),
-    message: connected ? "Connexion configurée" : "Configuration incomplète",
-  });
+  try {
+    const details = await testSagePortalConnection();
+    await run(`UPDATE connector_settings SET last_check_at = CURRENT_TIMESTAMP, last_error = NULL WHERE connector_key = 'sage_portal'`);
+    res.json({
+      connected: true,
+      status: "connected",
+      checked_at: new Date().toISOString(),
+      message: "Connexion SageSimu active",
+      details,
+    });
+  } catch (error) {
+    await run(`UPDATE connector_settings SET last_check_at = CURRENT_TIMESTAMP, last_error = ? WHERE connector_key = 'sage_portal'`, [error.message]).catch(() => {});
+    res.status(200).json({
+      connected: false,
+      status: "disconnected",
+      checked_at: new Date().toISOString(),
+      message: error.message || "Connexion SageSimu indisponible",
+    });
+  }
 });
 
 app.post("/api/admin/connector-sage/sync-inbound", authRequired, requireRoles("super_admin"), async (req, res) => {
-  await run(`UPDATE connector_settings SET last_inbound_sync_at = CURRENT_TIMESTAMP WHERE connector_key = 'sage_portal'`);
-  await run(`INSERT INTO sync_logs (system, direction, status, message) VALUES (?, ?, ?, ?)`, ["SAGE_PORTAL", "sage_to_website", "success", "Synchronisation entrante manuelle déclenchée"]);
-  await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_CONNECTOR_SAGE_INBOUND_SYNC", entityType: "connector_settings", entityId: "sage_portal", ip: req.ip });
-  res.json({ success: true, checked: 0, updated: 0 });
+  try {
+    const result = await syncSageInboundStatuses();
+    await run(`UPDATE connector_settings SET last_inbound_sync_at = CURRENT_TIMESTAMP, last_error = NULL WHERE connector_key = 'sage_portal'`);
+    await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_CONNECTOR_SAGE_INBOUND_SYNC", entityType: "connector_settings", entityId: "sage_portal", metadata: result, ip: req.ip });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    await run(`UPDATE connector_settings SET last_inbound_sync_at = CURRENT_TIMESTAMP, last_error = ? WHERE connector_key = 'sage_portal'`, [error.message]).catch(() => {});
+    await insertSyncLog("SAGE_PORTAL", "sage_to_website", "error", error.message);
+    res.status(500).json({ error: error.message || "Erreur synchronisation entrante" });
+  }
 });
 
 app.post("/api/admin/connector-sage/sync-outbound", authRequired, requireRoles("super_admin"), async (req, res) => {
-  await run(`UPDATE connector_settings SET last_outbound_sync_at = CURRENT_TIMESTAMP WHERE connector_key = 'sage_portal'`);
-  await run(`INSERT INTO sync_logs (system, direction, status, message) VALUES (?, ?, ?, ?)`, ["SAGE_PORTAL", "website_to_sage", "success", "Synchronisation sortante manuelle déclenchée"]);
-  await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_CONNECTOR_SAGE_OUTBOUND_SYNC", entityType: "connector_settings", entityId: "sage_portal", ip: req.ip });
-  res.json({ success: true, processed: 0 });
+  try {
+    const result = await processPendingSageActions();
+    await run(`UPDATE connector_settings SET last_outbound_sync_at = CURRENT_TIMESTAMP, last_error = NULL WHERE connector_key = 'sage_portal'`);
+    await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_CONNECTOR_SAGE_OUTBOUND_SYNC", entityType: "connector_settings", entityId: "sage_portal", metadata: result, ip: req.ip });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    await run(`UPDATE connector_settings SET last_outbound_sync_at = CURRENT_TIMESTAMP, last_error = ? WHERE connector_key = 'sage_portal'`, [error.message]).catch(() => {});
+    await insertSyncLog("SAGE_PORTAL", "website_to_sage", "error", error.message);
+    res.status(500).json({ error: error.message || "Erreur synchronisation sortante" });
+  }
 });
 
 app.get("/api/admin/orders", authRequired, requireAdmin, async (req, res) => {
   const orders = await all(
     `
-      SELECT o.*, c.company_name
+      SELECT
+        o.*,
+        c.company_name,
+        COALESCE(line_stats.line_count, CASE WHEN o.quantity_kg IS NOT NULL THEN 1 ELSE 0 END) AS line_count,
+        COALESCE(line_stats.total_quantity_kg, o.quantity_kg, 0) AS total_quantity_kg,
+        first_line.application_type AS first_application_type,
+        first_line.material_family AS first_material_family,
+        first_line.material_quality AS first_material_quality,
+        first_line.yarn_count_nm AS first_yarn_count_nm,
+        first_line.dtex AS first_dtex,
+        first_line.custom_count AS first_custom_count,
+        first_line.color_name AS first_color_name,
+        first_line.packaging AS first_packaging
       FROM portal_orders o
       LEFT JOIN portal_clients c ON c.customer_code = o.customer_code
+      LEFT JOIN (
+        SELECT portal_order_id, COUNT(*) AS line_count, SUM(quantity_kg) AS total_quantity_kg
+        FROM portal_order_lines
+        GROUP BY portal_order_id
+      ) line_stats ON line_stats.portal_order_id = o.id
+      LEFT JOIN portal_order_lines first_line ON first_line.portal_order_id = o.id AND first_line.line_number = 1
       ORDER BY o.id DESC
     `
   );

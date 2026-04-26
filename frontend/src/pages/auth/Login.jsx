@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import { api } from "../../api/api";
 import { setSession } from "../../auth/session";
 import { T } from "../../theme";
@@ -10,7 +10,9 @@ import logoToulemondeNew from "../../assets/logo-toulemonde-new.png";
 
 function Login({ mode = "client" }) {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const isAdmin = mode === "admin";
+  const sessionExpired = searchParams.get("expired") === "1";
 
   const [email, setEmail] = useState(
     isAdmin ? "admin@toulemonde.local" : "client@demo.local"
@@ -70,6 +72,7 @@ function Login({ mode = "client" }) {
             </p>
           </div>
 
+          {sessionExpired && !error && <div style={loginStyles.notice}>Votre session a expiré. Veuillez vous reconnecter.</div>}
           {error && <div style={loginStyles.error}>{error}</div>}
 
           <label style={loginStyles.field}>
@@ -336,6 +339,15 @@ input: {
     color: "#9f1d1d",
     background: "rgba(159,29,29,0.08)",
     border: "1px solid rgba(159,29,29,0.18)",
+  },
+
+  notice: {
+    padding: 14,
+    borderRadius: 8,
+    color: "rgb(0,0,254)",
+    background: "rgba(0,0,254,0.07)",
+    border: "1px solid rgba(0,0,254,0.18)",
+    fontWeight: 700,
   },
 };
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { api } from "../../api/api";
 import PageHeader from "../../components/PageHeader";
+import PageContainer from "../../components/PageContainer";
 import { T } from "../../theme";
 
 function ClientProfile() {
@@ -56,7 +57,7 @@ function ClientProfile() {
   }
 
   return (
-    <form style={profileStyles.page} onSubmit={save}>
+    <PageContainer as="form" onSubmit={save}>
       <PageHeader
         kicker="Portail client"
         title="Mon profil"
@@ -230,7 +231,7 @@ function ClientProfile() {
           </div>
         </main>
       </div>
-    </form>
+    </PageContainer>
   );
 }
 
@@ -291,11 +292,6 @@ function SummaryItem({ label, value }) {
 }
 
 const profileStyles = {
-  page: {
-    display: "grid",
-    gap: 22,
-  },
-
   header: {
     background: "#fff",
     border: `1px solid ${T.border}`,

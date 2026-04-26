@@ -21,7 +21,9 @@ function ClientLayout() {
   const isMobile = useIsMobile(900);
   const drawerVisible = isMobile ? menuOpen : true;
   const drawerExpanded = isMobile ? menuOpen : menuOpen;
-  const mainShift = isMobile ? 0 : drawerExpanded ? 288 : 76;
+  const SIDEBAR_COLLAPSED_WIDTH = 88;
+  const SIDEBAR_EXPANDED_WIDTH = 288;
+  const mainShift = isMobile ? 0 : drawerExpanded ? SIDEBAR_EXPANDED_WIDTH : SIDEBAR_COLLAPSED_WIDTH;
 
   useEffect(() => {
     function handleEscape(event) {
@@ -77,7 +79,7 @@ function ClientLayout() {
 
         <nav style={styles.nav}>
           <NavItem to="/client" label="Accueil" icon={Home} collapsed={!drawerExpanded} end onNavigate={() => isMobile && setMenuOpen(false)} />
-          <NavItem to="/client/orders/new" label="Nouvelle commande" icon={PlusCircle} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
+          <NavItem to="/client/orders/new" label="Nouvelle demande" icon={PlusCircle} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
           <NavItem to="/client/orders" label="Mes commandes" icon={ClipboardList} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
           <NavItem to="/client/documents" label="Documents" icon={FileText} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
           <NavItem to="/client/profile" label="Profil" icon={User} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
@@ -90,16 +92,18 @@ function ClientLayout() {
       </aside>
 
       <main style={{ ...styles.main, marginLeft: mainShift }}>
-        <Routes>
-          <Route index element={<ClientDashboard />} />
-          <Route path="orders/new" element={<NewYarnOrder />} />
-          <Route path="orders" element={<ClientOrders />} />
-          <Route path="orders/:id" element={<ClientOrderDetail />} />
-          <Route path="documents" element={<ClientDocuments />} />
-          <Route path="profile" element={<ClientProfile />} />
-          <Route path="contact" element={<ClientContact />} />
-          <Route path="admin/*" element={<Navigate to="/client" replace />} />
-        </Routes>
+        <div style={styles.mainInner}>
+          <Routes>
+            <Route index element={<ClientDashboard />} />
+            <Route path="orders/new" element={<NewYarnOrder />} />
+            <Route path="orders" element={<ClientOrders />} />
+            <Route path="orders/:id" element={<ClientOrderDetail />} />
+            <Route path="documents" element={<ClientDocuments />} />
+            <Route path="profile" element={<ClientProfile />} />
+            <Route path="contact" element={<ClientContact />} />
+            <Route path="admin/*" element={<Navigate to="/client" replace />} />
+          </Routes>
+        </div>
       </main>
     </div>
   );

@@ -34,6 +34,8 @@ function AdminOrderDetail() {
   if (!data) return <div style={styles.cardWide}>Chargement...</div>;
 
   const { order } = data;
+  const lines = data.lines?.length ? data.lines : specs.lines || [];
+  const totalQuantity = lines.reduce((sum, line) => sum + Number(line.quantity_kg || 0), 0) || order.quantity_kg || 0;
 
   async function updateStatus(status, defaultMessage) {
     await api(`/api/admin/orders/${id}/status`, {
@@ -49,28 +51,36 @@ function AdminOrderDetail() {
     await load();
   }
 
-  const technicalRows = [
-    ["order_number", order.order_number],
-    ["client_reference", order.client_reference],
-    ["company_name", order.company_name],
-    ["status", clientStatus(order.status)],
-    ["material", order.material],
-    ["yarn_count", order.yarn_count],
-    ["ply_number", order.ply_number || specs.ply_number],
-    ["twist", order.twist],
-    ["color", order.color],
-    ["color_reference", order.color_reference || specs.color_reference],
-    ["dyeing_required", order.dyeing_required ? "Oui" : "Non"],
-    ["quantity_kg", order.quantity_kg ? `${order.quantity_kg} kg` : null],
-    ["conditioning", order.conditioning],
-    ["destination_usage", order.destination_usage],
-    ["tolerance_percent", order.tolerance_percent !== null && order.tolerance_percent !== undefined ? `${order.tolerance_percent}%` : order.tolerance],
-    ["requested_date", formatDate(order.requested_date)],
-    ["requested_delivery_date", formatDate(order.requested_delivery_date)],
-    ["partial_delivery_allowed", order.partial_delivery_allowed ? "Oui" : "Non"],
-    ["sage_order_number", order.sage_order_number],
-    ["internal_comment", order.internal_comment],
-    ["comment", order.comment],
+  async function sendToSageNow() {
+    const result = await api(`/api/admin/orders/${id}/force-sync`, { method: "POST" });
+    const processed = result.sync?.processed || 0;
+    const failed = result.sync?.failed || 0;
+    setMessage(`Envoi Sage lancé. Traitées : ${processed}, erreurs : ${failed}.`);
+    await load();
+  }
+
+  const requestSections = [
+    ["Informations générales", [
+      ["order_number", order.order_number],
+      ["client_reference", order.client_reference || specs.customer_reference],
+      ["company_name", order.company_name],
+      ["status", clientStatus(order.status)],
+      ["line_count", lines.length || null],
+      ["total_quantity_kg", totalQuantity ? `${totalQuantity} kg` : null],
+      ["requested_delivery_date", formatDate(order.requested_delivery_date || order.requested_date)],
+      ["delivery_address_choice", order.delivery_address_choice || specs.delivery_address_choice],
+      ["delivery_address", order.delivery_address || specs.delivery_address],
+      ["delivery_comment", order.delivery_comment || specs.delivery_comment],
+      ["urgent", order.urgency === "urgent" ? "Oui" : "Non"],
+    ]],
+    ["Commentaires", [
+      ["comment", order.comment],
+      ["technical_file_name", order.technical_file_name || specs.technical_file_name],
+      ["sage_order_number", order.sage_order_number],
+      ["invoice_total_ht", order.invoice_total_ht ? `${order.invoice_total_ht} €` : null],
+      ["invoice_total_ttc", order.invoice_total_ttc ? `${order.invoice_total_ttc} €` : null],
+      ["internal_comment", order.internal_comment],
+    ]],
   ];
 
   return (
@@ -105,19 +115,42 @@ function AdminOrderDetail() {
           <button type="button" style={styles.ghostButton} onClick={() => updateStatus("rejected", "Commande refusée")}>Refuser</button>
           <button type="button" style={styles.ghostButton} onClick={() => updateStatus("pending_validation", "Correction demandée")}>Demander correction</button>
           <button type="button" style={styles.ghostButton} onClick={() => updateStatus(order.status, "Commentaire interne mis à jour")}>Ajouter commentaire interne</button>
+          <button type="button" style={styles.ghostButton} onClick={sendToSageNow}>Envoyer vers Sage maintenant</button>
         </div>
       </section>
 
       <section style={styles.cardWide}>
-        <h2 style={styles.cardTitle}>Détails techniques</h2>
-        <div style={styles.summaryGrid}>
-          {technicalRows.map(([field, value]) => (
-            <div key={field} style={styles.summaryItem}>
-              <div style={styles.label}>{adminFieldLabel(field)}</div>
-              <div>{value || "—"}</div>
+        <h2 style={styles.cardTitle}>Détails de la demande</h2>
+        {requestSections.map(([title, rows]) => (
+          <div key={title} style={{ display: "grid", gap: 12 }}>
+            <h3 style={styles.cardTitle}>{title}</h3>
+            <div style={styles.summaryGrid}>
+              {rows.map(([field, value]) => (
+                <div key={`${title}-${field}`} style={styles.summaryItem}>
+                  <div style={styles.label}>{adminFieldLabel(field)}</div>
+                  <div>{value || "—"}</div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </div>
+        ))}
+      </section>
+
+      <section style={styles.cardWide}>
+        <h2 style={styles.cardTitle}>Lignes de demande</h2>
+        {lines.length ? lines.map((line, index) => (
+          <div key={`${line.id || index}`} style={{ display: "grid", gap: 12, padding: 16, border: "1px solid rgba(17,24,39,0.10)", borderRadius: 14, background: "#FAF8F4" }}>
+            <h3 style={styles.cardTitle}>Ligne {index + 1}</h3>
+            <div style={styles.summaryGrid}>
+              {lineRows(line).map(([field, value]) => (
+                <div key={`${index}-${field}`} style={styles.summaryItem}>
+                  <div style={styles.label}>{adminFieldLabel(field)}</div>
+                  <div>{value || "—"}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )) : <div style={styles.emptyState}>Aucune ligne de demande enregistrée.</div>}
       </section>
 
       <section style={styles.cardWide}>
@@ -126,11 +159,42 @@ function AdminOrderDetail() {
       </section>
 
       <section style={styles.cardWide}>
+        <h2 style={styles.cardTitle}>Documents</h2>
+        <SimpleTable columns={["document_type", "filename", "source", "sage_reference", "created_at"]} rows={data.documents || []} />
+      </section>
+
+      <section style={styles.cardWide}>
         <h2 style={styles.cardTitle}>Logs sync</h2>
         <SimpleTable columns={["system", "direction", "status", "message", "created_at"]} rows={data.logs || []} />
       </section>
     </div>
   );
+}
+
+function lineRows(line) {
+  const count = line.count_system === "dtex" ? (line.dtex && `${line.dtex} dtex`) : line.yarn_count_nm || line.custom_count;
+  return [
+    ["application_type", line.application_type],
+    ["material_family", line.material_family],
+    ["material_quality", line.material_quality],
+    ["count_system", line.count_system],
+    ["yarn_count", count],
+    ["ply_number", line.ply_number],
+    ["twist_type", line.twist_type],
+    ["twist_direction", line.twist_direction],
+    ["finish", line.finish],
+    ["color_mode", line.color_mode],
+    ["color_name", line.color_name],
+    ["color_reference", line.color_reference],
+    ["dyeing_required", line.dyeing_required ? "Oui" : "Non"],
+    ["dyeing_comment", line.dyeing_comment],
+    ["packaging", line.packaging],
+    ["quantity_kg", line.quantity_kg ? `${line.quantity_kg} kg` : null],
+    ["meterage_per_unit", line.meterage_per_unit],
+    ["tolerance_percent", line.tolerance_percent !== null && line.tolerance_percent !== undefined ? `${line.tolerance_percent}%` : null],
+    ["partial_delivery_allowed", line.partial_delivery_allowed ? "Oui" : "Non"],
+    ["production_comment", line.production_comment],
+  ];
 }
 
 export default AdminOrderDetail;
