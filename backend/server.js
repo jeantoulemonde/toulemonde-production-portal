@@ -958,7 +958,19 @@ app.get("/api/admin/dashboard", authRequired, requireAdmin, async (req, res) => 
 });
 
 app.get("/api/admin/clients", authRequired, requireAdmin, async (req, res) => {
-  const clients = await all(`SELECT * FROM portal_clients ORDER BY id DESC`);
+  const clients = await all(`
+    SELECT
+      portal_clients.*,
+      portal_users.id AS user_id,
+      portal_users.full_name AS user_name,
+      portal_users.email AS user_email,
+      portal_users.status AS user_status,
+      portal_users.last_login_at AS last_login_at
+    FROM portal_clients
+    LEFT JOIN portal_users ON portal_users.client_id = portal_clients.id
+    GROUP BY portal_clients.id
+    ORDER BY portal_clients.id DESC
+  `);
   res.json(clients);
 });
 
@@ -1039,7 +1051,22 @@ app.post("/api/admin/clients", authRequired, requireAdmin, async (req, res) => {
 });
 
 app.get("/api/admin/clients/:id", authRequired, requireAdmin, async (req, res) => {
-  const client = await get(`SELECT * FROM portal_clients WHERE id = ?`, [req.params.id]);
+  const client = await get(
+    `
+      SELECT
+        portal_clients.*,
+        portal_users.id AS user_id,
+        portal_users.full_name AS user_name,
+        portal_users.email AS user_email,
+        portal_users.status AS user_status,
+        portal_users.last_login_at AS last_login_at
+      FROM portal_clients
+      LEFT JOIN portal_users ON portal_users.client_id = portal_clients.id
+      WHERE portal_clients.id = ?
+      GROUP BY portal_clients.id
+    `,
+    [req.params.id]
+  );
   if (!client) return res.status(404).json({ error: "Client introuvable" });
   const orders = await all(`SELECT * FROM portal_orders WHERE client_id = ? OR customer_code = ? ORDER BY id DESC`, [client.id, client.customer_code]);
   const users = await all(`SELECT id, email, full_name, role, client_id, client_code, is_active, status, last_login_at, created_at FROM portal_users WHERE client_id = ? OR client_code = ? ORDER BY id DESC`, [client.id, client.customer_code]);

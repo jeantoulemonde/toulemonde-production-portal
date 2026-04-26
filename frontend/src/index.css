@@ -15,7 +15,15 @@
 html {
   background: #f5f0e8;
 }
+input:focus {
+  border-color: rgba(0, 0, 254, 0.45) !important;
+  background: #ffffff !important;
+  box-shadow: 0 0 0 4px rgba(0, 0, 254, 0.08) !important;
+}
 
+input::placeholder {
+  color: rgba(17, 24, 39, 0.3);
+}
 body {
   margin: 0;
   min-width: 320px;
