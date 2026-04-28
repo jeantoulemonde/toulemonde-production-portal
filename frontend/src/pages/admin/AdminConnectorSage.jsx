@@ -10,9 +10,9 @@ import Metric from "../../components/Metric";
 function AdminConnectorSage() {
   const defaultConfig = {
     type: "postgres",
-    host: "",
+    host: "localhost",
     port: 5432,
-    database: "",
+    database: "sage_simu",
     user: "",
     password: "",
     ssl: false,
@@ -39,8 +39,9 @@ function AdminConnectorSage() {
     await load();
   }
   async function test() {
+    await api("/api/admin/connector-sage", { method: "PUT", body: JSON.stringify({ enabled, config }) });
     const result = await api("/api/admin/connector-sage/test", { method: "POST" });
-    setMessage(result.message);
+    setMessage(result.connected ? result.message : `Connexion SageSimu échouée : ${result.message}`);
     await load();
   }
   async function runSync(path) {
@@ -60,12 +61,23 @@ function AdminConnectorSage() {
           <Metric title="Entrant" value={formatDateTime(status?.last_inbound_sync_at)} />
           <Metric title="Sortant" value={formatDateTime(status?.last_outbound_sync_at)} />
         </div>
+        {status?.last_error && <div style={{ ...styles.error, marginTop: 14 }}>{status.last_error}</div>}
       </section>
       <section style={styles.cardWide}>
         <h2 style={styles.cardTitle}>Connexion Sage</h2>
         <div style={styles.formGrid}>
           <label style={styles.checkLine}><input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /> Connecteur actif</label>
-          {["type", "host", "port", "database", "user", "password"].map((field) => <AdminInput key={field} field={field} value={config[field]} onChange={(value) => update(field, value)} type={field === "password" ? "password" : "text"} />)}
+          <AdminInput field="type" value={config.type} onChange={(value) => update("type", value)} />
+          <AdminInput field="host" value={config.host} onChange={(value) => update("host", value)} />
+          <AdminInput field="port" value={config.port} onChange={(value) => update("port", value)} />
+          <AdminInput field="database" value={config.database} onChange={(value) => update("database", value)} />
+          <Field label="Utilisateur PostgreSQL">
+            <input style={styles.input} value={config.user || ""} onChange={(event) => update("user", event.target.value)} placeholder="Laisser vide pour l'utilisateur local PostgreSQL" />
+            <div style={styles.helpText}>Ce champ n'est pas votre compte admin du portail. Pour PostgreSQL local, laissez vide ou utilisez un rôle existant, par exemple votre utilisateur macOS.</div>
+          </Field>
+          <Field label="Mot de passe PostgreSQL">
+            <input style={styles.input} type="password" value={config.password || ""} onChange={(event) => update("password", event.target.value)} placeholder={config.password === "********" ? "Mot de passe déjà configuré" : ""} />
+          </Field>
           <label style={styles.checkLine}><input type="checkbox" checked={config.ssl} onChange={(e) => update("ssl", e.target.checked)} /> SSL</label>
         </div>
       </section>

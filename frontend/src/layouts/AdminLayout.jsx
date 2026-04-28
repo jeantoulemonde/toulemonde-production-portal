@@ -1,9 +1,12 @@
+import { useEffect, useState } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router";
 import { Building2, ClipboardList, Gauge, LogOut, ScrollText, Settings, Users } from "lucide-react";
 import logoMarkWhite from "../assets/M-DEFONCE.png";
 import { clearSession } from "../auth/session";
+import { api } from "../api/api";
 import { styles } from "../styles";
 import AdminNavItem from "../components/AdminNavItem";
+import HealthStatusBadge from "../components/HealthStatusBadge";
 import AdminDashboard from "../pages/admin/AdminDashboard";
 import AdminClients from "../pages/admin/AdminClients";
 import AdminClientDetail from "../pages/admin/AdminClientDetail";
@@ -15,6 +18,16 @@ import AdminSyncLogs from "../pages/admin/AdminSyncLogs";
 
 function AdminLayout() {
   const navigate = useNavigate();
+  const [pendingCount, setPendingCount] = useState(0);
+
+  async function loadPendingCount() {
+    const data = await api("/api/admin/orders/pending-count");
+    setPendingCount(data.count || 0);
+  }
+
+  useEffect(() => {
+    loadPendingCount().catch(console.error);
+  }, []);
 
   function logout() {
     clearSession("admin");
@@ -36,12 +49,15 @@ function AdminLayout() {
             <AdminNavItem to="/admin" label="Dashboard" icon={Gauge} end />
             <AdminNavItem to="/admin/clients" label="Clients" icon={Building2} />
             <AdminNavItem to="/admin/users" label="Utilisateurs" icon={Users} />
-            <AdminNavItem to="/admin/orders" label="Commandes" icon={ClipboardList} />
+            <AdminNavItem to="/admin/orders" label="Commandes" icon={ClipboardList} badge={pendingCount} />
             <AdminNavItem to="/admin/connector-sage" label="Connecteur Sage" icon={Settings} />
             <AdminNavItem to="/admin/sync-logs" label="Logs de synchronisation" icon={ScrollText} />
           </nav>
         </div>
-        <button style={styles.adminLogoutButton} onClick={logout}><LogOut size={17} />Déconnexion</button>
+        <div style={styles.adminSidebarFooter}>
+          <HealthStatusBadge showSage />
+          <button style={styles.adminLogoutButton} onClick={logout}><LogOut size={17} />Déconnexion</button>
+        </div>
       </aside>
       <main style={styles.adminMain}>
         <Routes>
@@ -49,7 +65,7 @@ function AdminLayout() {
           <Route path="clients" element={<AdminClients />} />
           <Route path="clients/:id" element={<AdminClientDetail />} />
           <Route path="users" element={<AdminUsers />} />
-          <Route path="orders" element={<AdminOrders />} />
+          <Route path="orders" element={<AdminOrders onPendingCountChange={loadPendingCount} />} />
           <Route path="orders/:id" element={<AdminOrderDetail />} />
           <Route path="connector-sage" element={<AdminConnectorSage />} />
           <Route path="sync-logs" element={<AdminSyncLogs />} />

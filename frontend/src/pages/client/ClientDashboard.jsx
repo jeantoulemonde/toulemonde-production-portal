@@ -24,9 +24,9 @@ function ClientDashboard() {
 
   const drafts = orders.filter((order) => order.status === "draft");
   const recentDrafts = drafts.slice(0, 3);
-  const submitted = orders.filter((order) => order.status === "submitted");
+  const submitted = orders.filter((order) => ["submitted", "pending_approval"].includes(order.status));
   const pendingValidation = orders.filter((order) => order.status === "pending_validation");
-  const inProduction = orders.filter((order) => ["approved", "pending_sage_sync", "sent_to_sage", "in_production"].includes(order.status));
+  const inProduction = orders.filter((order) => ["approved", "in_production"].includes(order.status));
   const ongoingOrders = orders
     .filter((order) => !["draft", "delivered", "cancelled"].includes(order.status))
     .slice(0, 5);
@@ -43,13 +43,8 @@ function ClientDashboard() {
 
   return (
     <PageContainer>
-      <PageHeader
-        kicker="Portail client"
-        title="Mon espace production"
-        subtitle="Pilotez vos demandes de fil, vos productions en cours et vos documents."
-      />
-
-      <section style={styles.heroPanel}>
+      
+    <section style={styles.heroPanel}>
         <img src={atelierMachines} alt="" style={styles.heroImage} />
         <div style={styles.heroOverlay} />
         <div style={styles.heroContent}>
@@ -68,7 +63,11 @@ function ClientDashboard() {
           )}
         </div>
       </section>
-
+<PageHeader
+        kicker="Portail client"
+        title="Mon espace production"
+        subtitle="Pilotez vos demandes de fil, vos productions en cours et vos documents."
+      />
       <section style={styles.cardWide}>
         <h2 style={styles.cardTitle}>À reprendre</h2>
         {recentDrafts.length ? (

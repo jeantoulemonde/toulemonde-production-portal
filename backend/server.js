@@ -7,6 +7,8 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { Pool } = require("pg");
+const { createSageSyncService } = require("./services/sageSyncService");
+const { createSageScheduler } = require("./jobs/sageScheduler");
 
 const app = express();
 const PORT = process.env.PORT || 3010;
@@ -18,6 +20,7 @@ const REFRESH_TTL = "7d";
 
 const roles = ["client", "commercial", "admin_portal", "production", "super_admin"];
 const ADMIN_ROLES = ["admin_portal", "commercial", "production", "super_admin"];
+const PENDING_APPROVAL_STATUSES = ["pending_approval"];
 
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
@@ -49,6 +52,32 @@ function all(sql, params = []) {
     db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
   });
 }
+
+app.get("/api/health/db", async (req, res) => {
+  try {
+    await get("SELECT 1 AS ok");
+    res.json({ status: "ok", database: "connected" });
+  } catch (error) {
+    console.error("DB connection error:", error.message);
+    res.status(500).json({
+      status: "error",
+      database: "disconnected",
+    });
+  }
+});
+
+app.get("/api/health/sage", async (req, res) => {
+  try {
+    await testSagePortalConnection();
+    res.json({ status: "ok", database: "connected" });
+  } catch (error) {
+    console.error("SageSimu connection error:", error.message);
+    res.status(500).json({
+      status: "error",
+      database: "disconnected",
+    });
+  }
+});
 
 async function addColumnIfMissing(tableName, columnName, definition) {
   const columns = await all(`PRAGMA table_info(${tableName})`);
@@ -668,6 +697,7 @@ async function createSageOrderForPortalOrder(pool, actionPayload, config) {
 
   const order = await get(`SELECT * FROM portal_orders WHERE id = ?`, [actionPayload.portalOrderId || actionPayload.entityId]);
   if (!order) throw new Error("Commande portail introuvable");
+  if (order.status !== "approved") throw new Error("Seule une commande approuvée peut être envoyée vers SageSimu");
   if (order.sage_order_number) {
     return { sageOrderNumber: order.sage_order_number, alreadySent: true };
   }
@@ -799,6 +829,7 @@ async function insertSyncLog(system, direction, status, message, entityType = nu
 async function scheduleSageOrderAction(order, reason = "Commande validée") {
   if (order.sage_order_number) return { actionId: null, skipped: true, reason: "Commande déjà envoyée vers Sage" };
   if (order.status === "draft") return { actionId: null, skipped: true, reason: "Brouillon non transmissible vers Sage" };
+  if (order.status !== "approved") return { actionId: null, skipped: true, reason: "Commande non approuvée" };
 
   const existing = await get(
     `
@@ -825,10 +856,9 @@ async function scheduleSageOrderAction(order, reason = "Commande validée") {
   });
 
   await run(
-    `UPDATE portal_orders SET status = 'pending_sage_sync', sync_status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    `UPDATE portal_orders SET sage_status = 'pending', sage_error_message = NULL, sync_status = 'pending', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
     [order.id]
   );
-  await insertStatusHistory(order.id, order.status, "pending_sage_sync", "admin", "Action d'envoi Sage créée");
   return { actionId, skipped: false };
 }
 
@@ -862,14 +892,16 @@ async function processPendingSageActions() {
       await run(
         `
           UPDATE portal_orders
-          SET status = 'sent_to_sage', sage_order_number = ?, sync_status = 'success', updated_at = CURRENT_TIMESTAMP
+          SET sage_order_number = ?,
+              sage_status = 'sent',
+              sage_error_message = NULL,
+              sage_sent_at = CURRENT_TIMESTAMP,
+              sync_status = 'success',
+              updated_at = CURRENT_TIMESTAMP
           WHERE id = ?
         `,
         [result.sageOrderNumber, payload.portalOrderId]
       );
-      if (order && order.status !== "sent_to_sage") {
-        await insertStatusHistory(order.id, order.status, "sent_to_sage", "sage", `Commande créée dans SageSimu : ${result.sageOrderNumber}`);
-      }
       await insertDocumentIfMissing(payload.portalOrderId, "order_confirmation", `confirmation-${result.sageOrderNumber}.pdf`, "sage", result.sageOrderNumber);
       await insertSyncLog("SAGE_PORTAL", "website_to_sage", "success", `Commande ${payload.orderNumber || payload.portalOrderId} envoyée vers SageSimu`, "portal_order", String(payload.portalOrderId));
       results.push({ actionId: action.id, success: true, result });
@@ -885,12 +917,9 @@ async function processPendingSageActions() {
       const order = await get(`SELECT * FROM portal_orders WHERE id = ?`, [payload.portalOrderId]);
       if (order) {
         await run(
-          `UPDATE portal_orders SET status = 'sage_sync_failed', sync_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-          [order.id]
+          `UPDATE portal_orders SET sage_status = 'error', sage_error_message = ?, sync_status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+          [error.message, order.id]
         );
-        if (order.status !== "sage_sync_failed") {
-          await insertStatusHistory(order.id, order.status, "sage_sync_failed", "sage", "Erreur envoi SageSimu");
-        }
       }
       await insertSyncLog("SAGE_PORTAL", "website_to_sage", "error", error.message, "portal_order", String(payload.portalOrderId || ""));
       results.push({ actionId: action.id, success: false, error: error.message });
@@ -960,12 +989,18 @@ async function syncSageInboundStatuses() {
         }
 
         const nextStatus = mapSageStatusToPortal(row.DO_Statut ?? row.do_statut);
-        const updateFields = [
-          "status = ?",
-          "sync_status = 'synced'",
-          "updated_at = CURRENT_TIMESTAMP",
-        ];
-        const updateValues = [nextStatus];
+        const updateFields = nextStatus === "sent_to_sage"
+          ? [
+            "sage_status = 'sent'",
+            "sync_status = 'synced'",
+            "updated_at = CURRENT_TIMESTAMP",
+          ]
+          : [
+            "status = ?",
+            "sync_status = 'synced'",
+            "updated_at = CURRENT_TIMESTAMP",
+          ];
+        const updateValues = nextStatus === "sent_to_sage" ? [] : [nextStatus];
 
         if (row.DO_TotalHT !== undefined || row.do_totalht !== undefined) {
           updateFields.push("invoice_total_ht = ?");
@@ -978,7 +1013,7 @@ async function syncSageInboundStatuses() {
         updateValues.push(order.id);
         await run(`UPDATE portal_orders SET ${updateFields.join(", ")} WHERE id = ?`, updateValues);
 
-        if (order.status !== nextStatus) {
+        if (nextStatus !== "sent_to_sage" && order.status !== nextStatus) {
           await insertStatusHistory(order.id, order.status, nextStatus, "sage", "Statut synchronisé depuis SageSimu");
         }
 
@@ -1002,6 +1037,19 @@ async function syncSageInboundStatuses() {
   await insertSyncLog("SAGE_PORTAL", "sage_to_website", "success", `${updated} statut(s) mis à jour depuis SageSimu`, null, null);
   return { checked: orders.length, updated, results };
 }
+
+const sageSyncService = createSageSyncService({
+  run,
+  insertSyncLog,
+  syncSageInboundStatuses,
+  processPendingSageActions,
+});
+
+const sageScheduler = createSageScheduler({
+  getConnectorConfig: getSagePortalConnector,
+  runSageImport: sageSyncService.runSageImport,
+  runSageExport: sageSyncService.runSageExport,
+});
 
 async function initDb() {
   await run(`
@@ -1285,6 +1333,12 @@ async function initDb() {
   await addColumnIfMissing("portal_clients", "last_sync_at", "DATETIME");
   await addColumnIfMissing("portal_orders", "client_id", "INTEGER");
   await addColumnIfMissing("portal_orders", "sage_order_number", "TEXT");
+  await addColumnIfMissing("portal_orders", "approval_comment", "TEXT");
+  await addColumnIfMissing("portal_orders", "approved_by", "INTEGER");
+  await addColumnIfMissing("portal_orders", "approved_at", "DATETIME");
+  await addColumnIfMissing("portal_orders", "sage_status", "TEXT DEFAULT 'not_sent'");
+  await addColumnIfMissing("portal_orders", "sage_error_message", "TEXT");
+  await addColumnIfMissing("portal_orders", "sage_sent_at", "DATETIME");
   await addColumnIfMissing("portal_orders", "requested_delivery_date", "TEXT");
   await addColumnIfMissing("portal_orders", "sync_status", "TEXT");
   await addColumnIfMissing("portal_orders", "internal_comment", "TEXT");
@@ -1310,6 +1364,8 @@ async function initDb() {
   await addColumnIfMissing("portal_orders", "delivery_address", "TEXT");
   await addColumnIfMissing("portal_orders", "delivery_comment", "TEXT");
   await addColumnIfMissing("portal_orders", "technical_file_name", "TEXT");
+  await run(`UPDATE portal_orders SET sage_status = 'not_sent' WHERE sage_status IS NULL OR sage_status = ''`);
+  await run(`UPDATE portal_orders SET status = 'pending_approval' WHERE status = 'submitted'`);
   await addColumnIfMissing("portal_orders", "invoice_number", "TEXT");
   await addColumnIfMissing("portal_orders", "invoice_date", "TEXT");
   await addColumnIfMissing("portal_orders", "invoice_total_ht", "REAL");
@@ -1370,9 +1426,11 @@ async function initDb() {
   }
 }
 
-initDb().catch((error) => {
-  console.error("Erreur init DB portail :", error);
-});
+initDb()
+  .then(() => sageScheduler.startSageScheduler())
+  .catch((error) => {
+    console.error("Erreur init DB portail :", error);
+  });
 
 app.get("/api/health", (req, res) => {
   res.json({ ok: true, app: "toulemonde-client-portal" });
@@ -1576,9 +1634,9 @@ app.get("/api/orders", authRequired, listClientOrders);
 async function createPortalOrder(req, res) {
   try {
     const body = req.body || {};
-    const status = body.status === "draft" ? "draft" : "submitted";
+    const status = body.status === "draft" ? "draft" : "pending_approval";
     const { general, normalizedLines, firstLine, totalQuantity } = preparePortalOrderPayload(body, { allowEmptyLines: status === "draft" });
-    const validationError = status === "submitted" ? validateSubmittedPortalOrder(general, normalizedLines) : null;
+    const validationError = status === "pending_approval" ? validateSubmittedPortalOrder(general, normalizedLines) : null;
     if (validationError) return res.status(400).json(validationError);
 
     const client = req.user.role === "client" ? await getUserClient(req.user) : null;
@@ -1629,12 +1687,13 @@ async function createPortalOrder(req, res) {
           delivery_address,
           delivery_comment,
           technical_file_name,
+          sage_status,
           status,
           created_by,
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `,
       [
         orderNumber,
@@ -1676,6 +1735,7 @@ async function createPortalOrder(req, res) {
         general.delivery_address,
         general.delivery_comment,
         general.technical_file_name,
+        "not_sent",
         status,
         req.user.sub,
       ]
@@ -1857,6 +1917,7 @@ async function getClientOrderDetail(req, res) {
 }
 
 app.get("/api/client/orders/:id", authRequired, requireClient, getClientOrderDetail);
+app.get("/api/orders/pending-count", authRequired, requireAdmin, getPendingOrderCount);
 app.get("/api/orders/:id", authRequired, getClientOrderDetail);
 
 async function getOwnedClientOrder(req, res) {
@@ -1882,7 +1943,7 @@ app.put("/api/client/orders/:id", authRequired, requireClient, async (req, res) 
       return res.status(403).json({ error: "Seuls les brouillons peuvent être modifiés." });
     }
 
-    const nextStatus = req.body?.status === "submitted" ? "submitted" : "draft";
+    const nextStatus = req.body?.status === "submitted" ? "pending_approval" : "draft";
     const { general, normalizedLines, firstLine, totalQuantity } = preparePortalOrderPayload(req.body || {}, { allowEmptyLines: nextStatus === "draft" });
     const validationError = nextStatus === "submitted" ? validateSubmittedPortalOrder(general, normalizedLines) : null;
     if (validationError) return res.status(400).json(validationError);
@@ -1897,7 +1958,7 @@ app.put("/api/client/orders/:id", authRequired, requireClient, async (req, res) 
     await auditLog({
       userId: req.user.sub,
       role: req.user.role,
-      action: nextStatus === "submitted" ? "PORTAL_ORDER_DRAFT_SUBMIT" : "PORTAL_ORDER_DRAFT_UPDATE",
+      action: nextStatus === "pending_approval" ? "PORTAL_ORDER_DRAFT_SUBMIT" : "PORTAL_ORDER_DRAFT_UPDATE",
       entityType: "portal_order",
       entityId: String(order.id),
       ip: req.ip,
@@ -1934,8 +1995,8 @@ app.post("/api/client/orders/:id/submit", authRequired, requireClient, async (re
     const validationError = validateSubmittedPortalOrder(general, normalizedLines);
     if (validationError) return res.status(400).json(validationError);
 
-    await run(`UPDATE portal_orders SET status = 'submitted', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [order.id]);
-    await insertStatusHistory(order.id, order.status, "submitted", "portal", "Brouillon soumis depuis le portail");
+    await run(`UPDATE portal_orders SET status = 'pending_approval', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [order.id]);
+    await insertStatusHistory(order.id, order.status, "pending_approval", "portal", "Brouillon soumis depuis le portail");
     await auditLog({ userId: req.user.sub, role: req.user.role, action: "PORTAL_ORDER_DRAFT_SUBMIT", entityType: "portal_order", entityId: String(order.id), ip: req.ip });
     res.json({ success: true, order: await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]) });
   } catch (error) {
@@ -2014,12 +2075,13 @@ app.post("/api/orders/:id/messages", authRequired, async (req, res) => {
 });
 
 app.get("/api/admin/dashboard", authRequired, requireAdmin, async (req, res) => {
-  const [clients, users, orders, pending, errors] = await Promise.all([
+  const [clients, users, orders, pending, errors, pendingApproval] = await Promise.all([
     get(`SELECT COUNT(*) AS count FROM portal_clients`),
     get(`SELECT COUNT(*) AS count FROM portal_users`),
     get(`SELECT COUNT(*) AS count FROM portal_orders`),
     get(`SELECT COUNT(*) AS count FROM erp_pending_actions WHERE status IN ('pending', 'PENDING', 'processing', 'IN_PROGRESS')`),
     get(`SELECT COUNT(*) AS count FROM sync_logs WHERE status IN ('error', 'ERROR', 'failed')`),
+    get(`SELECT COUNT(*) AS count FROM portal_orders WHERE status IN (${PENDING_APPROVAL_STATUSES.map(() => "?").join(",")})`, PENDING_APPROVAL_STATUSES),
   ]);
   res.json({
     clients: clients?.count || 0,
@@ -2027,8 +2089,19 @@ app.get("/api/admin/dashboard", authRequired, requireAdmin, async (req, res) => 
     orders: orders?.count || 0,
     pendingActions: pending?.count || 0,
     syncErrors: errors?.count || 0,
+    pendingApproval: pendingApproval?.count || 0,
   });
 });
+
+async function getPendingOrderCount(req, res) {
+  const row = await get(
+    `SELECT COUNT(*) AS count FROM portal_orders WHERE status IN (${PENDING_APPROVAL_STATUSES.map(() => "?").join(",")})`,
+    PENDING_APPROVAL_STATUSES
+  );
+  res.json({ count: row?.count || 0 });
+}
+
+app.get("/api/admin/orders/pending-count", authRequired, requireAdmin, getPendingOrderCount);
 
 app.get("/api/admin/clients", authRequired, requireAdmin, async (req, res) => {
   const clients = await all(`
@@ -2282,6 +2355,54 @@ app.post("/api/admin/users/:id/reset-password", authRequired, requireAdmin, asyn
   res.json({ success: true, resetLink: user.role === "client" ? `/client/reset-password/${token}` : `/admin/reset-password/${token}` });
 });
 
+async function approvePortalOrder(req, res) {
+  try {
+    const { comment = "" } = req.body || {};
+    const order = await get(`SELECT * FROM portal_orders WHERE id = ?`, [req.params.id]);
+    if (!order) return res.status(404).json({ error: "Commande introuvable" });
+    if (order.status === "draft") return res.status(400).json({ error: "Un brouillon ne peut pas être approuvé." });
+    if (order.status === "cancelled") return res.status(400).json({ error: "Une commande annulée ne peut pas être approuvée." });
+
+    await run(
+      `
+        UPDATE portal_orders
+        SET status = 'approved',
+            approval_comment = ?,
+            approved_by = ?,
+            approved_at = CURRENT_TIMESTAMP,
+            sage_status = COALESCE(NULLIF(sage_status, ''), 'not_sent'),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `,
+      [comment || null, req.user.sub, order.id]
+    );
+
+    await insertStatusHistory(order.id, order.status, "approved", "admin", comment || "Commande approuvée");
+
+    const approvedOrder = await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]);
+    const sageAction = await scheduleSageOrderAction(approvedOrder, "Commande approuvée par l'administration");
+
+    await auditLog({
+      userId: req.user.sub,
+      role: req.user.role,
+      action: "ADMIN_ORDER_APPROVE",
+      entityType: "portal_order",
+      entityId: String(order.id),
+      metadata: { comment, sageAction },
+      ip: req.ip,
+    });
+
+    console.log(`[ORDER APPROVAL] order ${order.id} approved by user ${req.user.sub}`);
+    res.json({ success: true, sageAction, order: await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]) });
+  } catch (error) {
+    console.error("Erreur approbation commande :", error.message);
+    res.status(500).json({ error: "Erreur approbation commande" });
+  }
+}
+
+app.post("/api/orders/:id/approve", authRequired, requireAdmin, approvePortalOrder);
+app.post("/api/admin/orders/:id/approve", authRequired, requireAdmin, approvePortalOrder);
+
 app.get("/api/admin/orders/:id", authRequired, requireAdmin, async (req, res) => {
   const order = await get(`SELECT o.*, c.company_name, c.contact_email FROM portal_orders o LEFT JOIN portal_clients c ON c.customer_code = o.customer_code WHERE o.id = ?`, [req.params.id]);
   if (!order) return res.status(404).json({ error: "Commande introuvable" });
@@ -2298,12 +2419,10 @@ app.patch("/api/admin/orders/:id/status", authRequired, requireAdmin, async (req
     const { status, message, internal_comment: internalComment } = req.body || {};
     const allowedStatuses = [
       "submitted",
+      "pending_approval",
       "pending_validation",
       "approved",
       "rejected",
-      "pending_sage_sync",
-      "sent_to_sage",
-      "sage_sync_failed",
       "in_production",
       "ready",
       "delivered",
@@ -2334,23 +2453,17 @@ app.patch("/api/admin/orders/:id/status", authRequired, requireAdmin, async (req
       [order.id, order.status, status, "admin", message || internalComment || null]
     );
 
-    let action = null;
-    if (status === "approved") {
-      const approvedOrder = await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]);
-      action = await scheduleSageOrderAction(approvedOrder, "Commande approuvée par l'administration");
-    }
-
     await auditLog({
       userId: req.user.sub,
       role: req.user.role,
       action: "ADMIN_ORDER_STATUS_UPDATE",
       entityType: "portal_order",
       entityId: String(order.id),
-      metadata: { oldStatus: order.status, newStatus: status, message: message || internalComment || null, action },
+      metadata: { oldStatus: order.status, newStatus: status, message: message || internalComment || null },
       ip: req.ip,
     });
 
-    res.json({ success: true, action, order: await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]) });
+    res.json({ success: true, order: await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]) });
   } catch (error) {
     console.error("Erreur changement statut commande :", error.message);
     res.status(500).json({ error: "Erreur changement statut commande" });
@@ -2362,6 +2475,7 @@ app.post("/api/admin/orders/:id/force-sync", authRequired, requireAdmin, async (
     const order = await get(`SELECT * FROM portal_orders WHERE id = ?`, [req.params.id]);
     if (!order) return res.status(404).json({ error: "Commande introuvable" });
     if (order.status === "draft") return res.status(400).json({ error: "Un brouillon ne peut pas être envoyé vers Sage." });
+    if (order.status !== "approved") return res.status(400).json({ error: "Seule une commande approuvée peut être envoyée vers Sage." });
     const action = await scheduleSageOrderAction(order, "Envoi Sage manuel");
     const sync = await processPendingSageActions();
     await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_ORDER_FORCE_SYNC", entityType: "portal_order", entityId: String(order.id), metadata: { action, sync }, ip: req.ip });
@@ -2411,6 +2525,9 @@ app.put("/api/admin/connector-sage", authRequired, requireRoles("super_admin"), 
       [JSON.stringify(nextConfig), enabled]
     );
     await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_CONNECTOR_SAGE_UPDATE", entityType: "connector_settings", entityId: "sage_portal", ip: req.ip });
+    await sageScheduler.startSageScheduler().catch((error) => {
+      console.error("[SAGE SCHEDULER] redémarrage impossible :", error.message);
+    });
     res.json({ success: true, config: sanitizeConnectorConfig(nextConfig), enabled: Boolean(enabled) });
   } catch (error) {
     res.status(500).json({ error: "Erreur sauvegarde connecteur" });
@@ -2441,26 +2558,20 @@ app.post("/api/admin/connector-sage/test", authRequired, requireRoles("super_adm
 
 app.post("/api/admin/connector-sage/sync-inbound", authRequired, requireRoles("super_admin"), async (req, res) => {
   try {
-    const result = await syncSageInboundStatuses();
-    await run(`UPDATE connector_settings SET last_inbound_sync_at = CURRENT_TIMESTAMP, last_error = NULL WHERE connector_key = 'sage_portal'`);
+    const result = await sageSyncService.runSageImport();
     await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_CONNECTOR_SAGE_INBOUND_SYNC", entityType: "connector_settings", entityId: "sage_portal", metadata: result, ip: req.ip });
     res.json({ success: true, ...result });
   } catch (error) {
-    await run(`UPDATE connector_settings SET last_inbound_sync_at = CURRENT_TIMESTAMP, last_error = ? WHERE connector_key = 'sage_portal'`, [error.message]).catch(() => {});
-    await insertSyncLog("SAGE_PORTAL", "sage_to_website", "error", error.message);
     res.status(500).json({ error: error.message || "Erreur synchronisation entrante" });
   }
 });
 
 app.post("/api/admin/connector-sage/sync-outbound", authRequired, requireRoles("super_admin"), async (req, res) => {
   try {
-    const result = await processPendingSageActions();
-    await run(`UPDATE connector_settings SET last_outbound_sync_at = CURRENT_TIMESTAMP, last_error = NULL WHERE connector_key = 'sage_portal'`);
+    const result = await sageSyncService.runSageExport();
     await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_CONNECTOR_SAGE_OUTBOUND_SYNC", entityType: "connector_settings", entityId: "sage_portal", metadata: result, ip: req.ip });
     res.json({ success: true, ...result });
   } catch (error) {
-    await run(`UPDATE connector_settings SET last_outbound_sync_at = CURRENT_TIMESTAMP, last_error = ? WHERE connector_key = 'sage_portal'`, [error.message]).catch(() => {});
-    await insertSyncLog("SAGE_PORTAL", "website_to_sage", "error", error.message);
     res.status(500).json({ error: error.message || "Erreur synchronisation sortante" });
   }
 });
@@ -2593,8 +2704,13 @@ app.post("/api/agent/actions/result", agentRequired, async (req, res) => {
     const payload = JSON.parse(action.payload_json);
     if (payload.portalOrderId) {
       await run(
-        `UPDATE portal_orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-        [success ? "sent_to_sage" : "sage_sync_failed", payload.portalOrderId]
+        `UPDATE portal_orders
+         SET sage_status = ?,
+             sage_error_message = ?,
+             sage_sent_at = CASE WHEN ? = 'sent' THEN CURRENT_TIMESTAMP ELSE sage_sent_at END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [success ? "sent" : "error", success ? null : error || null, success ? "sent" : "error", payload.portalOrderId]
       );
     }
   }

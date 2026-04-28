@@ -6,6 +6,7 @@ import logoMarkBlue from "../assets/M-RVB-2.png";
 import { clearSession } from "../auth/session";
 import { styles } from "../styles";
 import { useIsMobile } from "../utils/useIsMobile";
+import HealthStatusBadge from "../components/HealthStatusBadge";
 import NavItem from "../components/NavItem";
 import ClientDashboard from "../pages/client/ClientDashboard";
 import NewYarnOrder from "../pages/client/NewYarnOrder";
@@ -62,6 +63,7 @@ function ClientLayout() {
           <div style={styles.brandText}>Toulemonde Production</div>
         </div>
         <div style={styles.headerActions}>
+          <HealthStatusBadge />
           <button style={styles.headerActionButton} onClick={() => navigate("/client/profile")}>Profil</button>
         </div>
       </header>

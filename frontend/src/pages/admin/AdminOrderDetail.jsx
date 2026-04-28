@@ -12,6 +12,8 @@ function AdminOrderDetail() {
   const [message, setMessage] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
   const [internalComment, setInternalComment] = useState("");
+  const [approveOpen, setApproveOpen] = useState(false);
+  const [approveComment, setApproveComment] = useState("");
 
   async function load() {
     const next = await api(`/api/admin/orders/${id}`);
@@ -51,6 +53,17 @@ function AdminOrderDetail() {
     await load();
   }
 
+  async function approveOrder() {
+    await api(`/api/orders/${id}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ comment: approveComment }),
+    });
+    setMessage("Commande approuvée.");
+    setApproveOpen(false);
+    setApproveComment("");
+    await load();
+  }
+
   async function sendToSageNow() {
     const result = await api(`/api/admin/orders/${id}/force-sync`, { method: "POST" });
     const processed = result.sync?.processed || 0;
@@ -77,6 +90,9 @@ function AdminOrderDetail() {
       ["comment", order.comment],
       ["technical_file_name", order.technical_file_name || specs.technical_file_name],
       ["sage_order_number", order.sage_order_number],
+      ["sage_status", order.sage_status || "not_sent"],
+      ["sage_error_message", order.sage_error_message],
+      ["sage_sent_at", order.sage_sent_at],
       ["invoice_total_ht", order.invoice_total_ht ? `${order.invoice_total_ht} €` : null],
       ["invoice_total_ttc", order.invoice_total_ttc ? `${order.invoice_total_ttc} €` : null],
       ["internal_comment", order.internal_comment],
@@ -111,11 +127,11 @@ function AdminOrderDetail() {
           </label>
         </div>
         <div style={styles.formActions}>
-          <button type="button" style={styles.primaryButton} onClick={() => updateStatus("approved", "Commande approuvée")}>Approuver</button>
+          <button type="button" style={styles.primaryButton} onClick={() => setApproveOpen(true)}>Approuver</button>
           <button type="button" style={styles.ghostButton} onClick={() => updateStatus("rejected", "Commande refusée")}>Refuser</button>
           <button type="button" style={styles.ghostButton} onClick={() => updateStatus("pending_validation", "Correction demandée")}>Demander correction</button>
           <button type="button" style={styles.ghostButton} onClick={() => updateStatus(order.status, "Commentaire interne mis à jour")}>Ajouter commentaire interne</button>
-          <button type="button" style={styles.ghostButton} onClick={sendToSageNow}>Envoyer vers Sage maintenant</button>
+          {order.status === "approved" && <button type="button" style={styles.ghostButton} onClick={sendToSageNow}>Envoyer vers Sage maintenant</button>}
         </div>
       </section>
 
@@ -167,9 +183,36 @@ function AdminOrderDetail() {
         <h2 style={styles.cardTitle}>Logs sync</h2>
         <SimpleTable columns={["system", "direction", "status", "message", "created_at"]} rows={data.logs || []} />
       </section>
+
+      {approveOpen && (
+        <div style={local.modalOverlay} role="dialog" aria-modal="true">
+          <div style={local.modal}>
+            <h2 style={styles.cardTitle}>Valider la commande</h2>
+            <p style={styles.muted}>Êtes-vous sûr de vouloir valider cette commande ?</p>
+            <label style={styles.field}>
+              <span style={styles.label}>Commentaire facultatif</span>
+              <textarea
+                style={styles.textarea}
+                value={approveComment}
+                onChange={(event) => setApproveComment(event.target.value)}
+                placeholder="Commentaire interne de validation"
+              />
+            </label>
+            <div style={styles.formActions}>
+              <button type="button" style={styles.ghostButton} onClick={() => setApproveOpen(false)}>Annuler</button>
+              <button type="button" style={styles.primaryButton} onClick={approveOrder}>Confirmer la validation</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
+const local = {
+  modalOverlay: { position: "fixed", inset: 0, zIndex: 500, background: "rgba(0,0,0,0.32)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },
+  modal: { width: "min(560px, 100%)", background: "#fff", borderRadius: 18, padding: 22, display: "grid", gap: 16, boxShadow: "0 28px 80px rgba(0,0,0,0.28)" },
+};
 
 function lineRows(line) {
   const count = line.count_system === "dtex" ? (line.dtex && `${line.dtex} dtex`) : line.yarn_count_nm || line.custom_count;

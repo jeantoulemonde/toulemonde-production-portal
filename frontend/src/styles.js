@@ -267,6 +267,8 @@ appTopBar: {
   adminNav: { display: "grid", gap: 8, marginTop: 18 },
   adminNavItem: { minHeight: 44, padding: "0 12px", borderRadius: 12, color: "rgba(255,255,255,0.76)", textDecoration: "none", display: "flex", alignItems: "center", gap: 10, fontSize: 12, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.06em", border: "1px solid transparent" },
   adminNavItemActive: { color: "#fff", background: "rgba(0,0,254,0.42)", borderColor: "rgba(255,255,255,0.16)" },
+  adminNavBadge: { marginLeft: "auto", minWidth: 22, height: 22, padding: "0 7px", borderRadius: 999, background: T.bleu, color: "#fff", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 900, letterSpacing: 0 },
+  adminSidebarFooter: { display: "grid", gap: 12 },
   adminLogoutButton: { minHeight: 44, border: "1px solid rgba(255,255,255,0.16)", background: "rgba(255,255,255,0.06)", color: "#fff", borderRadius: 12, padding: "0 12px", display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 12, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.06em" },
   adminMain: { padding: "28px clamp(18px, 3vw, 38px) 48px", minWidth: 0 },
   adminPageHeader: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 18, marginBottom: 4, flexWrap: "wrap" },

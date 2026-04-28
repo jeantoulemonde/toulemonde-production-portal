@@ -1,6 +1,7 @@
 export const clientStatusLabels = {
   draft: "Brouillon",
   submitted: "Envoyée",
+  pending_approval: "En attente validation",
   pending_validation: "En validation",
   rejected: "Refusée",
   pending_sage_sync: "Acceptée",
@@ -14,8 +15,19 @@ export const clientStatusLabels = {
   cancelled: "Annulée",
 };
 
+export const sageStatusLabels = {
+  not_sent: "Non envoyé",
+  pending: "En cours",
+  sent: "Envoyé",
+  error: "Erreur",
+};
+
 export function clientStatus(status) {
   return clientStatusLabels[status] || "En traitement";
+}
+
+export function sageStatus(status) {
+  return sageStatusLabels[status] || "Non envoyé";
 }
 
 export function formatDate(value) {
@@ -34,6 +46,7 @@ export function formatCell(value) {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "number") return value;
   if (typeof value === "string" && clientStatusLabels[value]) return clientStatus(value);
+  if (typeof value === "string" && sageStatusLabels[value]) return sageStatus(value);
   if (typeof value === "string" && value.includes("T")) return formatDateTime(value);
   return String(value);
 }
@@ -100,8 +113,14 @@ export function adminFieldLabel(field) {
     technical_file_name: "Fichier technique",
     urgent: "Urgence",
     comment: "Commentaire",
-    status: "Statut",
+    status: "Statut métier",
     sage_order_number: "N° Sage",
+    sage_status: "Statut Sage",
+    sage_error_message: "Erreur Sage",
+    sage_sent_at: "Envoyé à Sage le",
+    approval_comment: "Commentaire validation",
+    approved_by: "Validé par",
+    approved_at: "Validé le",
     invoice_number: "N° facture",
     invoice_date: "Date facture",
     invoice_total_ht: "Total HT",
