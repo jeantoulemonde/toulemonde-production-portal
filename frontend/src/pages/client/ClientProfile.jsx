@@ -4,8 +4,10 @@ import { api } from "../../api/api";
 import PageHeader from "../../components/PageHeader";
 import PageContainer from "../../components/PageContainer";
 import { T } from "../../theme";
+import { useIsMobile } from "../../utils/useIsMobile";
 
 function ClientProfile() {
+  const isMobile = useIsMobile(980);
   const [profile, setProfile] = useState({
     company_name: "",
     vat_number: "",
@@ -67,8 +69,8 @@ function ClientProfile() {
       {error && <div style={profileStyles.error}>{error}</div>}
       {message && <div style={profileStyles.success}>{message}</div>}
 
-      <div style={profileStyles.layout}>
-        <aside style={profileStyles.summary}>
+      <div style={{ ...profileStyles.layout, ...(isMobile ? profileStyles.layoutMobile : {}) }}>
+        <aside style={{ ...profileStyles.summary, ...(isMobile ? profileStyles.summaryMobile : {}) }}>
           <div style={profileStyles.avatar}>
             {(profile.company_name || profile.contact_name || "T").charAt(0)}
           </div>
@@ -237,6 +239,7 @@ function ClientProfile() {
 
 function Section({ title, children, defaultOpen = false }) {
   const [open, setOpen] = useState(defaultOpen);
+  const isMobile = useIsMobile(760);
 
   return (
     <section style={profileStyles.section}>
@@ -261,7 +264,7 @@ function Section({ title, children, defaultOpen = false }) {
         />
       </button>
 
-      {open && <div style={profileStyles.grid}>{children}</div>}
+      {open && <div style={{ ...profileStyles.grid, ...(isMobile ? profileStyles.gridMobile : {}) }}>{children}</div>}
     </section>
   );
 }
@@ -330,8 +333,12 @@ const profileStyles = {
   layout: {
     display: "grid",
     gridTemplateColumns: "300px minmax(0, 1fr)",
-    gap: 22,
+    gap: 24,
     alignItems: "start",
+  },
+
+  layoutMobile: {
+    gridTemplateColumns: "1fr",
   },
 
   summary: {
@@ -341,9 +348,14 @@ const profileStyles = {
     gap: 18,
     background: "#fff",
     border: `1px solid ${T.border}`,
-    borderRadius: 24,
+    borderRadius: 18,
     padding: 22,
     boxShadow: T.shadowSoft,
+  },
+
+  summaryMobile: {
+    position: "relative",
+    top: "auto",
   },
 
   avatar: {
@@ -410,14 +422,14 @@ const profileStyles = {
 
   content: {
     display: "grid",
-    gap: 14,
+    gap: 18,
   },
 
   section: {
     background: "#fff",
     border: `1px solid ${T.border}`,
     borderRadius: 18,
-    boxShadow: "0 10px 28px rgba(0,0,0,0.045)",
+    boxShadow: T.shadowSoft,
     overflow: "hidden",
   },
 
@@ -454,6 +466,10 @@ const profileStyles = {
     padding: 22,
   },
 
+  gridMobile: {
+    gridTemplateColumns: "1fr",
+  },
+
   field: {
     display: "grid",
     gap: 7,
@@ -476,7 +492,7 @@ const profileStyles = {
     boxSizing: "border-box",
     height: 48,
     padding: "0 14px",
-    borderRadius: 10,
+    borderRadius: 12,
     border: `1px solid ${T.border}`,
     background: "#fff",
     color: T.noir,
@@ -494,8 +510,9 @@ const profileStyles = {
     border: "none",
     background: T.bleu,
     color: "#fff",
-    borderRadius: 8,
-    padding: "13px 18px",
+    minHeight: 44,
+    borderRadius: 12,
+    padding: "0 18px",
     cursor: "pointer",
     fontWeight: 800,
     textTransform: "uppercase",

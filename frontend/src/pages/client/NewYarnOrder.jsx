@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
+import { Factory, ShoppingBag } from "lucide-react";
 import atelierBobines from "../../assets/atelier-bobines.png";
 import atelierMatiere from "../../assets/atelier-matiere.png";
 import { api } from "../../api/api";
@@ -93,6 +94,8 @@ function NewYarnOrder() {
   const [searchParams] = useSearchParams();
   const isMobile = useIsMobile(1100);
   const draftId = searchParams.get("draftId");
+  const initialType = draftId || searchParams.get("type") === "technical" ? "technical" : null;
+  const [flowType, setFlowType] = useState(initialType);
   const [step, setStep] = useState(0);
   const [lineStep, setLineStep] = useState(0);
   const [request, setRequest] = useState(initialRequest);
@@ -411,6 +414,37 @@ function NewYarnOrder() {
     ["Urgence", request.urgent ? "Oui" : "Non"],
   ];
 
+  if (!flowType) {
+    return (
+      <PageContainer>
+        <PageHeader
+          kicker="Portail client"
+          title="Nouvelle demande de commande"
+          subtitle="Choisissez le type de demande que vous souhaitez créer."
+        />
+        <section style={local.choiceGrid}>
+          <ChoiceCard
+            icon={Factory}
+            title="Demande industrielle"
+            text="Configurez une demande technique de fil sur mesure avec une ou plusieurs lignes."
+            buttonLabel="Créer une demande industrielle"
+            onClick={() => {
+              setFlowType("technical");
+              navigate("/client/orders/new?type=technical", { replace: true });
+            }}
+          />
+          <ChoiceCard
+            icon={ShoppingBag}
+            title="Mercerie"
+            text="Commandez des articles standards depuis le catalogue."
+            buttonLabel="Commander en mercerie"
+            onClick={() => navigate("/client/mercerie")}
+          />
+        </section>
+      </PageContainer>
+    );
+  }
+
   return (
     <PageContainer as="form" onSubmit={submit}>
       <PageHeader
@@ -531,6 +565,19 @@ function NewYarnOrder() {
         />
       )}
     </PageContainer>
+  );
+}
+
+function ChoiceCard({ icon: Icon, title, text, buttonLabel, onClick }) {
+  return (
+    <article style={local.choiceCard}>
+      <div style={local.choiceIcon}><Icon size={28} /></div>
+      <div>
+        <h2 style={local.choiceTitle}>{title}</h2>
+        <p style={local.choiceText}>{text}</p>
+      </div>
+      <button type="button" style={local.choiceButton} onClick={onClick}>{buttonLabel}</button>
+    </article>
   );
 }
 
@@ -983,6 +1030,12 @@ function lineSubtitle(line) {
 }
 
 const local = {
+  choiceGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 20, alignItems: "stretch" },
+  choiceCard: { background: "#fff", border: `1px solid ${T.border}`, borderRadius: 24, padding: 24, display: "grid", gridTemplateRows: "auto minmax(112px, 1fr) auto", gap: 18, alignContent: "stretch", boxShadow: T.shadowSoft, minWidth: 0 },
+  choiceIcon: { width: 62, height: 62, borderRadius: 18, display: "grid", placeItems: "center", background: T.bleuPale, color: T.bleu, border: `1px solid ${T.bleuBorder}` },
+  choiceTitle: { margin: 0, fontFamily: T.fontTitle, fontSize: 26, fontWeight: 900, letterSpacing: "-0.03em", color: T.noir },
+  choiceText: { margin: "8px 0 0", color: T.textSoft, lineHeight: 1.55, maxWidth: 520 },
+  choiceButton: { ...styles.primaryButton, width: "100%", alignSelf: "end" },
   orderLayout: { width: "100%", maxWidth: "100%", minWidth: 0, display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(280px, 320px)", gap: 24, alignItems: "start", boxSizing: "border-box" },
   orderLayoutMobile: { gridTemplateColumns: "1fr" },
   draftNotice: { justifySelf: "start", border: `1px solid ${T.bleuBorder}`, background: T.bleuPale, color: T.bleu, borderRadius: 999, padding: "8px 12px", fontSize: 11, fontWeight: 900, textTransform: "uppercase", letterSpacing: "0.10em" },
@@ -990,7 +1043,7 @@ const local = {
   quickSummaryRow: { display: "grid", gap: 4, paddingBottom: 12, borderBottom: `1px solid ${T.border}` },
   linesMiniList: { display: "grid", gap: 10 },
   miniLine: { display: "grid", gap: 3, padding: 10, background: T.ecru, border: `1px solid ${T.border}`, borderRadius: 10, fontSize: 13 },
-  actionGroup: { display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" },
+  actionGroup: { display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 10, flexWrap: "wrap", marginLeft: "auto" },
   stepperWrap: { width: "100%", maxWidth: "100%", overflowX: "auto", overflowY: "hidden", paddingBottom: 6, boxSizing: "border-box" },
   stepper: { display: "flex", gap: 10, minWidth: "max-content" },
   stepButton: { flex: "0 0 auto", border: `1px solid ${T.border}`, background: "#fff", color: T.noir, borderRadius: 999, padding: "10px 13px", cursor: "pointer", fontSize: 11, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase", display: "inline-flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" },

@@ -15,6 +15,10 @@ import ClientOrderDetail from "../pages/client/ClientOrderDetail";
 import ClientDocuments from "../pages/client/ClientDocuments";
 import ClientProfile from "../pages/client/ClientProfile";
 import ClientContact from "../pages/client/ClientContact";
+import ClientMercerieCatalog from "../pages/client/ClientMercerieCatalog";
+import ClientMercerieCart from "../pages/client/ClientMercerieCart";
+import ClientMercerieOrders from "../pages/client/ClientMercerieOrders";
+import ClientMercerieProductDetail from "../pages/client/ClientMercerieProductDetail";
 
 function ClientLayout() {
   const navigate = useNavigate();
@@ -100,6 +104,10 @@ function ClientLayout() {
             <Route path="orders/new" element={<NewYarnOrder />} />
             <Route path="orders" element={<ClientOrders />} />
             <Route path="orders/:id" element={<ClientOrderDetail />} />
+            <Route path="mercerie" element={<ClientMercerieCatalog />} />
+            <Route path="mercerie/products/:id" element={<ClientMercerieProductDetail />} />
+            <Route path="mercerie/cart" element={<ClientMercerieCart />} />
+            <Route path="mercerie/orders" element={<ClientMercerieOrders />} />
             <Route path="documents" element={<ClientDocuments />} />
             <Route path="profile" element={<ClientProfile />} />
             <Route path="contact" element={<ClientContact />} />

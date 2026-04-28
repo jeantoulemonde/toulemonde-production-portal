@@ -9,10 +9,22 @@ import PageContainer from "../../components/PageContainer";
 function ClientOrders() {
   const navigate = useNavigate();
   const [orders, setOrders] = useState([]);
+  const [typeFilter, setTypeFilter] = useState("all");
   const [message, setMessage] = useState("");
   async function loadOrders() {
-    const next = await api("/api/client/orders");
-    setOrders(next);
+    const [technicalOrders, catalogOrders] = await Promise.all([
+      api("/api/client/orders"),
+      api("/api/client/catalog/orders"),
+    ]);
+    setOrders([
+      ...technicalOrders.map((order) => ({ ...order, order_type: "technical" })),
+      ...catalogOrders.map((order) => ({
+        ...order,
+        order_type: "catalog",
+        client_reference: order.customer_reference,
+        total_quantity_kg: order.total_quantity,
+      })),
+    ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)));
   }
   useEffect(() => { loadOrders().catch(console.error); }, []);
 
@@ -40,11 +52,19 @@ function ClientOrders() {
         subtitle="Consultez l’historique et l’avancement de vos demandes de production."
       />
       {message && <div style={message.includes("incomplète") || message.includes("manqu") ? styles.error : styles.success}>{message}</div>}
+      <section style={styles.cardWide}>
+        <div style={styles.formActions}>
+          <button type="button" style={typeFilter === "all" ? styles.primaryButton : styles.ghostButton} onClick={() => setTypeFilter("all")}>Toutes</button>
+          <button type="button" style={typeFilter === "technical" ? styles.primaryButton : styles.ghostButton} onClick={() => setTypeFilter("technical")}>Industriel</button>
+          <button type="button" style={typeFilter === "catalog" ? styles.primaryButton : styles.ghostButton} onClick={() => setTypeFilter("catalog")}>Mercerie</button>
+        </div>
+      </section>
       <OrderList
         title="Demandes de commande"
-        orders={orders}
+        orders={orders.filter((order) => typeFilter === "all" || order.order_type === typeFilter)}
         onOpen={(order) => navigate(`/client/orders/${order.id}`)}
         onResume={(order) => navigate(`/client/orders/new?draftId=${order.id}`)}
+        onOpenCatalog={() => navigate("/client/mercerie/orders")}
         onDeleteDraft={deleteDraft}
         onSubmitDraft={submitDraft}
       />
@@ -52,15 +72,17 @@ function ClientOrders() {
   );
 }
 
-function OrderList({ title, orders, onOpen, onResume, onDeleteDraft, onSubmitDraft }) {
+function OrderList({ title, orders, onOpen, onResume, onOpenCatalog, onDeleteDraft, onSubmitDraft }) {
   return (
     <section style={styles.cardWide}>
       <h2 style={styles.cardTitle}>{title}</h2>
       <ClientOrdersTable
         orders={orders}
-        columns={["order", "reference", "lines", "application", "material", "count", "quantity", "status", "date"]}
+        columns={["type", "order", "reference", "lines", "application", "material", "count", "quantity", "status", "date"]}
         empty="Aucune demande pour le moment."
-        actions={(order) => order.status === "draft" ? (
+        actions={(order) => order.order_type === "catalog" ? (
+          <button style={styles.linkButton} onClick={onOpenCatalog}>Commandes mercerie</button>
+        ) : order.status === "draft" ? (
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button style={styles.linkButton} onClick={() => onResume(order)}>Reprendre</button>
             <button style={styles.linkButton} onClick={() => onSubmitDraft(order)}>Soumettre</button>

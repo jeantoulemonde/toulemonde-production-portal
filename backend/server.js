@@ -3,6 +3,7 @@ const cors = require("cors");
 const rateLimit = require("express-rate-limit");
 const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
+const fs = require("fs");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
@@ -25,6 +26,7 @@ const PENDING_APPROVAL_STATUSES = ["pending_approval"];
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 app.use(rateLimit({ windowMs: 60 * 1000, limit: 240 }));
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 const dbPath = path.join(__dirname, "data", "toulemonde-client.db");
 const db = new sqlite3.Database(dbPath, (err) => {
@@ -197,6 +199,17 @@ async function generateOrderNumber() {
   const prefix = `TP-${year}-`;
   const row = await get(
     `SELECT order_number FROM portal_orders WHERE order_number LIKE ? ORDER BY order_number DESC LIMIT 1`,
+    [`${prefix}%`]
+  );
+  const lastNumber = row?.order_number ? Number(String(row.order_number).replace(prefix, "")) : 0;
+  return `${prefix}${String(lastNumber + 1).padStart(4, "0")}`;
+}
+
+async function generateCatalogOrderNumber() {
+  const year = new Date().getFullYear();
+  const prefix = `MC-${year}-`;
+  const row = await get(
+    `SELECT order_number FROM catalog_orders WHERE order_number LIKE ? ORDER BY order_number DESC LIMIT 1`,
     [`${prefix}%`]
   );
   const lastNumber = row?.order_number ? Number(String(row.order_number).replace(prefix, "")) : 0;
@@ -1305,10 +1318,127 @@ async function initDb() {
     )
   `);
 
+  await run(`
+    CREATE TABLE IF NOT EXISTS catalog_categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      slug TEXT UNIQUE NOT NULL,
+      description TEXT,
+      display_order INTEGER DEFAULT 0,
+      is_active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS catalog_products (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      category_id INTEGER,
+      sku TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      short_description TEXT,
+      description TEXT,
+      default_image_url TEXT,
+      unit_label TEXT DEFAULT 'pièce',
+      price REAL,
+      currency TEXT DEFAULT 'EUR',
+      stock_quantity REAL,
+      is_active INTEGER DEFAULT 1,
+      is_featured INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(category_id) REFERENCES catalog_categories(id)
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS catalog_product_images (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      image_url TEXT,
+      storage_path TEXT,
+      alt_text TEXT,
+      display_order INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(product_id) REFERENCES catalog_products(id)
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS catalog_product_color_variants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      color_name TEXT NOT NULL,
+      color_hex TEXT,
+      image_url TEXT,
+      storage_path TEXT,
+      display_order INTEGER DEFAULT 0,
+      is_active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(product_id) REFERENCES catalog_products(id)
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS product_variants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      reference TEXT UNIQUE NOT NULL,
+      color_name TEXT NOT NULL,
+      color_hex TEXT,
+      image_url TEXT,
+      availability_status TEXT DEFAULT 'available',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(product_id) REFERENCES catalog_products(id)
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS catalog_orders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id INTEGER NOT NULL,
+      order_number TEXT UNIQUE NOT NULL,
+      customer_reference TEXT,
+      status TEXT NOT NULL DEFAULT 'submitted',
+      comment TEXT,
+      internal_comment TEXT,
+      requested_delivery_date TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(client_id) REFERENCES portal_clients(id)
+    )
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS catalog_order_lines (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      catalog_order_id INTEGER NOT NULL,
+      product_id INTEGER,
+      sku TEXT NOT NULL,
+      product_name TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      unit_label TEXT,
+      unit_price REAL,
+      line_total REAL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(catalog_order_id) REFERENCES catalog_orders(id),
+      FOREIGN KEY(product_id) REFERENCES catalog_products(id)
+    )
+  `);
+
   await run(`CREATE INDEX IF NOT EXISTS idx_portal_orders_customer ON portal_orders(customer_code)`);
   await run(`CREATE INDEX IF NOT EXISTS idx_portal_orders_status ON portal_orders(status)`);
   await run(`CREATE INDEX IF NOT EXISTS idx_portal_order_lines_order ON portal_order_lines(portal_order_id)`);
   await run(`CREATE INDEX IF NOT EXISTS idx_erp_pending_status ON erp_pending_actions(status)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_catalog_products_category ON catalog_products(category_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_catalog_products_active ON catalog_products(is_active)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_catalog_product_colors_product ON catalog_product_color_variants(product_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_product_variants_product ON product_variants(product_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_catalog_orders_client ON catalog_orders(client_id)`);
+  await run(`CREATE INDEX IF NOT EXISTS idx_catalog_order_lines_order ON catalog_order_lines(catalog_order_id)`);
 
   await addColumnIfMissing("erp_pending_actions", "locked_at", "DATETIME");
   await addColumnIfMissing("erp_pending_actions", "entity_type", "TEXT");
@@ -1364,6 +1494,33 @@ async function initDb() {
   await addColumnIfMissing("portal_orders", "delivery_address", "TEXT");
   await addColumnIfMissing("portal_orders", "delivery_comment", "TEXT");
   await addColumnIfMissing("portal_orders", "technical_file_name", "TEXT");
+  await addColumnIfMissing("catalog_products", "default_image_url", "TEXT");
+  await addColumnIfMissing("catalog_order_lines", "color_variant_id", "INTEGER");
+  await addColumnIfMissing("catalog_order_lines", "variant_reference", "TEXT");
+  await addColumnIfMissing("catalog_order_lines", "color_name", "TEXT");
+  await addColumnIfMissing("catalog_order_lines", "color_hex", "TEXT");
+  await run(`
+    INSERT OR IGNORE INTO product_variants (
+      product_id,
+      reference,
+      color_name,
+      color_hex,
+      image_url,
+      availability_status,
+      created_at,
+      updated_at
+    )
+    SELECT
+      product_id,
+      'LEGACY-' || product_id || '-' || id,
+      color_name,
+      color_hex,
+      COALESCE(image_url, storage_path),
+      CASE WHEN is_active = 1 THEN 'available' ELSE 'unavailable' END,
+      COALESCE(created_at, CURRENT_TIMESTAMP),
+      COALESCE(updated_at, CURRENT_TIMESTAMP)
+    FROM catalog_product_color_variants
+  `);
   await run(`UPDATE portal_orders SET sage_status = 'not_sent' WHERE sage_status IS NULL OR sage_status = ''`);
   await run(`UPDATE portal_orders SET status = 'pending_approval' WHERE status = 'submitted'`);
   await addColumnIfMissing("portal_orders", "invoice_number", "TEXT");
@@ -1424,6 +1581,81 @@ async function initDb() {
     await run(`UPDATE portal_users SET client_id = ? WHERE client_code = ? AND client_id IS NULL`, [demoClient.id, "CLI-DEMO"]);
     await run(`UPDATE portal_orders SET client_id = ? WHERE customer_code = ? AND client_id IS NULL`, [demoClient.id, "CLI-DEMO"]);
   }
+
+  const mercerieCategories = [
+    ["Aiguilles", "aiguilles", "Aiguilles pour travaux de couture, broderie et confection.", 10],
+    ["Boutons", "boutons", "Boutons et petites fournitures de finition.", 20],
+    ["Rubans", "rubans", "Rubans textiles pour finition, assemblage ou décoration.", 30],
+    ["Fermetures", "fermetures", "Fermetures et accessoires de montage.", 40],
+    ["Fils à coudre", "fils-a-coudre", "Fils standards pour confection et retouche.", 50],
+    ["Accessoires", "accessoires", "Accessoires textiles courants.", 60],
+    ["Outils", "outils", "Outils de préparation et de finition.", 70],
+    ["Autres", "autres", "Autres références mercerie.", 80],
+  ];
+
+  for (const [name, slug, description, displayOrder] of mercerieCategories) {
+    await run(
+      `
+        INSERT OR IGNORE INTO catalog_categories (name, slug, description, display_order, is_active)
+        VALUES (?, ?, ?, ?, 1)
+      `,
+      [name, slug, description, displayOrder]
+    );
+  }
+
+  const sampleProducts = [
+    {
+      categorySlug: "aiguilles",
+      sku: "AIG-001",
+      name: "Aiguilles couture assorties",
+      short: "Assortiment d'aiguilles pour confection et retouche.",
+      unit: "boîte",
+      price: 4.9,
+      stock: 120,
+    },
+    {
+      categorySlug: "fils-a-coudre",
+      sku: "FIL-001",
+      name: "Fil à coudre coton noir",
+      short: "Bobine standard pour couture générale.",
+      unit: "bobine",
+      price: 3.5,
+      stock: 80,
+    },
+    {
+      categorySlug: "rubans",
+      sku: "RUB-001",
+      name: "Ruban coton écru 20 mm",
+      short: "Ruban coton pour finition textile.",
+      unit: "mètre",
+      price: 1.8,
+      stock: 200,
+    },
+  ];
+
+  for (const product of sampleProducts) {
+    const category = await get(`SELECT id FROM catalog_categories WHERE slug = ?`, [product.categorySlug]);
+    await run(
+      `
+        INSERT OR IGNORE INTO catalog_products (
+          category_id,
+          sku,
+          name,
+          short_description,
+          unit_label,
+          price,
+          currency,
+          stock_quantity,
+          is_active,
+          is_featured
+        )
+        VALUES (?, ?, ?, ?, ?, ?, 'EUR', ?, 1, 1)
+      `,
+      [category?.id || null, product.sku, product.name, product.short, product.unit, product.price, product.stock]
+    );
+  }
+
+  await seedTextileCatalogDataset();
 }
 
 initDb()
@@ -2072,6 +2304,908 @@ app.post("/api/orders/:id/messages", authRequired, async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: "Erreur message" });
   }
+});
+
+function sampleCatalogImageDataUrl(colorHex, label) {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="900" height="650" viewBox="0 0 900 650">
+      <rect width="900" height="650" fill="${colorHex}"/>
+      <path d="M0 500 C180 430 320 560 500 500 S760 430 900 500 V650 H0 Z" fill="rgba(255,255,255,0.16)"/>
+      <circle cx="710" cy="150" r="110" fill="rgba(255,255,255,0.14)"/>
+      <text x="70" y="110" font-family="Arial, sans-serif" font-size="42" font-weight="700" fill="rgba(255,255,255,0.88)">TOULEMONDE</text>
+      <text x="70" y="174" font-family="Arial, sans-serif" font-size="30" font-weight="600" fill="rgba(255,255,255,0.82)">${label}</text>
+    </svg>
+  `;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
+async function ensureCatalogCategory({ name, slug, description, displayOrder }) {
+  await run(
+    `
+      INSERT OR IGNORE INTO catalog_categories (name, slug, description, display_order, is_active)
+      VALUES (?, ?, ?, ?, 1)
+    `,
+    [name, slug, description, displayOrder]
+  );
+  await run(
+    `
+      UPDATE catalog_categories
+      SET name = ?, description = ?, display_order = ?, is_active = 1, updated_at = CURRENT_TIMESTAMP
+      WHERE slug = ?
+    `,
+    [name, description, displayOrder, slug]
+  );
+  return get(`SELECT id FROM catalog_categories WHERE slug = ?`, [slug]);
+}
+
+async function ensureTextileProduct(product) {
+  const category = await ensureCatalogCategory(product.category);
+  const defaultImageUrl = sampleCatalogImageDataUrl(product.defaultColor, product.name);
+  await run(
+    `
+      INSERT OR IGNORE INTO catalog_products (
+        category_id,
+        sku,
+        name,
+        short_description,
+        description,
+        default_image_url,
+        unit_label,
+        price,
+        currency,
+        stock_quantity,
+        is_active,
+        is_featured
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'EUR', ?, 1, 1)
+    `,
+    [
+      category?.id || null,
+      product.sku,
+      product.name,
+      product.description,
+      product.description,
+      defaultImageUrl,
+      product.unitLabel || "pièce",
+      product.price ?? null,
+      product.stockQuantity ?? null,
+    ]
+  );
+  await run(
+    `
+      UPDATE catalog_products
+      SET category_id = ?,
+          name = ?,
+          short_description = ?,
+          description = ?,
+          default_image_url = COALESCE(default_image_url, ?),
+          is_active = 1,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE sku = ?
+    `,
+    [category?.id || null, product.name, product.description, product.description, defaultImageUrl, product.sku]
+  );
+  const created = await get(`SELECT id FROM catalog_products WHERE sku = ?`, [product.sku]);
+  if (created) {
+    await saveCatalogProductImage(created.id, defaultImageUrl, product.name);
+  }
+  return created;
+}
+
+async function ensureProductVariant(productId, variant) {
+  const imageUrl = sampleCatalogImageDataUrl(variant.colorHex, variant.colorName);
+  await run(
+    `
+      INSERT OR IGNORE INTO product_variants (
+        product_id,
+        reference,
+        color_name,
+        color_hex,
+        image_url,
+        availability_status,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    `,
+    [productId, variant.reference, variant.colorName, variant.colorHex, imageUrl, variant.availabilityStatus || "available"]
+  );
+  await run(
+    `
+      UPDATE product_variants
+      SET product_id = ?,
+          color_name = ?,
+          color_hex = ?,
+          image_url = COALESCE(image_url, ?),
+          availability_status = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE reference = ?
+    `,
+    [productId, variant.colorName, variant.colorHex, imageUrl, variant.availabilityStatus || "available", variant.reference]
+  );
+}
+
+async function seedTextileCatalogDataset() {
+  const textileProducts = [
+    {
+      sku: "FIL-COTON-PREMIUM-120",
+      name: "Fil coton premium 120",
+      description: "Fil coton haute résistance adapté à la confection textile industrielle.",
+      category: { name: "Fils", slug: "fils", description: "Fils textiles standards et techniques.", displayOrder: 10 },
+      defaultColor: "#1E3A8A",
+      unitLabel: "bobine",
+      variants: [
+        { reference: "REF-COT-120-BLEU", colorName: "Bleu marine", colorHex: "#1E3A8A" },
+        { reference: "REF-COT-120-ECRU", colorName: "Écru", colorHex: "#F5F0E6" },
+        { reference: "REF-COT-120-NOIR", colorName: "Noir", colorHex: "#111111" },
+      ],
+    },
+    {
+      sku: "TISSU-VELOURS-AMEUBLEMENT",
+      name: "Tissu velours ameublement",
+      description: "Velours épais pour rideaux et ameublement.",
+      category: { name: "Tissus", slug: "tissus", description: "Tissus au mètre pour usage textile et ameublement.", displayOrder: 20 },
+      defaultColor: "#7F1D1D",
+      unitLabel: "mètre",
+      variants: [
+        { reference: "REF-VEL-AME-BORDEAUX", colorName: "Bordeaux", colorHex: "#7F1D1D" },
+        { reference: "REF-VEL-AME-BEIGE", colorName: "Beige", colorHex: "#E8DCC4" },
+        { reference: "REF-VEL-AME-GRIS", colorName: "Gris clair", colorHex: "#D1D5DB" },
+      ],
+    },
+    {
+      sku: "FIL-POLYESTER-TECHNIQUE-80",
+      name: "Fil polyester technique 80",
+      description: "Fil polyester renforcé pour usage intensif.",
+      category: { name: "Fibres techniques", slug: "fibres-techniques", description: "Fils et fibres pour usages intensifs ou spécifiques.", displayOrder: 40 },
+      defaultColor: "#FFFFFF",
+      unitLabel: "bobine",
+      variants: [
+        { reference: "REF-POL-80-BLANC", colorName: "Blanc", colorHex: "#FFFFFF" },
+        { reference: "REF-POL-80-ROUGE", colorName: "Rouge", colorHex: "#DC2626" },
+        { reference: "REF-POL-80-VERT", colorName: "Vert industriel", colorHex: "#166534" },
+      ],
+    },
+  ];
+
+  await ensureCatalogCategory({
+    name: "Mercerie",
+    slug: "mercerie",
+    description: "Articles standards de mercerie et fournitures textile.",
+    displayOrder: 30,
+  });
+
+  for (const product of textileProducts) {
+    const created = await ensureTextileProduct(product);
+    if (!created) continue;
+    for (const variant of product.variants) {
+      await ensureProductVariant(created.id, variant);
+    }
+  }
+}
+
+function mapCatalogProduct(row) {
+  return {
+    ...row,
+    is_active: Boolean(row.is_active),
+    is_featured: Boolean(row.is_featured),
+    price: row.price === null || row.price === undefined ? null : Number(row.price),
+    stock_quantity: row.stock_quantity === null || row.stock_quantity === undefined ? null : Number(row.stock_quantity),
+    default_image_url: row.default_image_url || null,
+    image_url: row.default_image_url || row.image_url || row.storage_path || null,
+  };
+}
+
+async function listCatalogProducts({ activeOnly = false, categoryId = null, search = "" } = {}) {
+  const params = [];
+  const where = [];
+  if (activeOnly) where.push("p.is_active = 1");
+  if (categoryId) {
+    where.push("p.category_id = ?");
+    params.push(categoryId);
+  }
+  if (search) {
+    where.push("(p.name LIKE ? OR p.sku LIKE ? OR p.short_description LIKE ?)");
+    params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+  }
+
+  const rows = await all(
+    `
+      SELECT
+        p.*,
+        c.name AS category_name,
+        c.slug AS category_slug,
+        img.image_url,
+        img.storage_path,
+        img.alt_text
+      FROM catalog_products p
+      LEFT JOIN catalog_categories c ON c.id = p.category_id
+      LEFT JOIN (
+        SELECT product_id, image_url, storage_path, alt_text, MIN(display_order) AS display_order
+        FROM catalog_product_images
+        GROUP BY product_id
+      ) img ON img.product_id = p.id
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      ORDER BY p.is_featured DESC, c.display_order ASC, p.name ASC
+    `,
+    params
+  );
+
+  return rows.map(mapCatalogProduct);
+}
+
+async function listCatalogColorVariants(productId, { activeOnly = false } = {}) {
+  const where = ["product_id = ?"];
+  const params = [productId];
+  if (activeOnly) where.push("availability_status != 'unavailable'");
+
+  const rows = await all(
+    `
+      SELECT *
+      FROM product_variants
+      WHERE ${where.join(" AND ")}
+      ORDER BY color_name ASC, id ASC
+    `,
+    params
+  );
+
+  return rows.map((variant) => ({
+    ...variant,
+    availability_status: variant.availability_status || "available",
+    is_active: variant.availability_status !== "unavailable",
+    image_url: variant.image_url || null,
+  }));
+}
+
+async function getCatalogProductDetail(productId, { activeOnly = false } = {}) {
+  const products = await listCatalogProducts({ activeOnly });
+  const product = products.find((item) => Number(item.id) === Number(productId));
+  if (!product) return null;
+  const images = await all(`SELECT * FROM catalog_product_images WHERE product_id = ? ORDER BY display_order ASC, id ASC`, [product.id]);
+  const colorVariants = await listCatalogColorVariants(product.id, { activeOnly });
+  return {
+    ...product,
+    images,
+    color_variants: colorVariants,
+  };
+}
+
+async function getCatalogOrderDetail(orderId, clientId = null) {
+  const params = [orderId];
+  const clientFilter = clientId ? "AND o.client_id = ?" : "";
+  if (clientId) params.push(clientId);
+  const order = await get(
+    `
+      SELECT o.*, c.company_name, c.contact_email
+      FROM catalog_orders o
+      LEFT JOIN portal_clients c ON c.id = o.client_id
+      WHERE o.id = ? ${clientFilter}
+    `,
+    params
+  );
+  if (!order) return null;
+  const lines = await all(`SELECT * FROM catalog_order_lines WHERE catalog_order_id = ? ORDER BY id ASC`, [order.id]);
+  return { order, lines };
+}
+
+app.get("/api/client/catalog/categories", authRequired, requireClient, async (req, res) => {
+  try {
+    const categories = await all(
+      `
+        SELECT *
+        FROM catalog_categories
+        WHERE is_active = 1
+        ORDER BY display_order ASC, name ASC
+      `
+    );
+    res.json(categories.map((category) => ({ ...category, is_active: Boolean(category.is_active) })));
+  } catch (error) {
+    console.error("Erreur lecture catégories mercerie :", error.message);
+    res.status(500).json({ error: "Erreur lecture catégories" });
+  }
+});
+
+app.get("/api/client/catalog/products", authRequired, requireClient, async (req, res) => {
+  try {
+    const products = await listCatalogProducts({
+      activeOnly: true,
+      categoryId: req.query.category_id || null,
+      search: req.query.search || "",
+    });
+    res.json(products);
+  } catch (error) {
+    console.error("Erreur lecture produits mercerie :", error.message);
+    res.status(500).json({ error: "Erreur lecture produits" });
+  }
+});
+
+app.get("/api/client/catalog/products/:id", authRequired, requireClient, async (req, res) => {
+  try {
+    const product = await getCatalogProductDetail(req.params.id, { activeOnly: true });
+    if (!product) return res.status(404).json({ error: "Produit introuvable" });
+    res.json(product);
+  } catch (error) {
+    res.status(500).json({ error: "Erreur lecture produit" });
+  }
+});
+
+app.post("/api/client/catalog/orders", authRequired, requireClient, async (req, res) => {
+  try {
+    const client = await getUserClient(req.user);
+    if (!client) return res.status(404).json({ error: "Client introuvable" });
+
+    const body = req.body || {};
+    const lines = Array.isArray(body.lines) ? body.lines : [];
+    if (!lines.length) return res.status(400).json({ error: "Le panier est vide." });
+
+    const normalizedLines = [];
+    for (const line of lines) {
+      const productId = Number(line.product_id);
+      const quantity = Number(line.quantity);
+      if (!productId || !Number.isFinite(quantity) || quantity <= 0) {
+        return res.status(400).json({ error: "Quantité produit invalide." });
+      }
+      const product = await get(`SELECT * FROM catalog_products WHERE id = ? AND is_active = 1`, [productId]);
+      if (!product) return res.status(400).json({ error: "Un produit du panier n'est plus disponible." });
+      let colorVariant = null;
+      if (line.color_variant_id) {
+        colorVariant = await get(
+          `
+            SELECT *
+            FROM product_variants
+            WHERE id = ? AND product_id = ? AND availability_status != 'unavailable'
+          `,
+          [line.color_variant_id, productId]
+        );
+        if (!colorVariant) return res.status(400).json({ error: "Une variante couleur du panier n'est plus disponible." });
+      }
+      const unitPrice = product.price === null || product.price === undefined ? null : Number(product.price);
+      normalizedLines.push({
+        product,
+        colorVariant,
+        quantity,
+        unitPrice,
+        lineTotal: unitPrice === null ? null : Number((unitPrice * quantity).toFixed(2)),
+      });
+    }
+
+    const orderNumber = await generateCatalogOrderNumber();
+    const orderResult = await run(
+      `
+        INSERT INTO catalog_orders (
+          client_id,
+          order_number,
+          customer_reference,
+          status,
+          comment,
+          requested_delivery_date,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, 'submitted', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `,
+      [
+        client.id,
+        orderNumber,
+        body.customer_reference || null,
+        body.comment || null,
+        body.requested_delivery_date || null,
+      ]
+    );
+
+    for (const line of normalizedLines) {
+      await run(
+        `
+          INSERT INTO catalog_order_lines (
+            catalog_order_id,
+            product_id,
+            sku,
+            product_name,
+          quantity,
+          unit_label,
+          unit_price,
+          line_total,
+          color_variant_id,
+          variant_reference,
+          color_name,
+          color_hex,
+          created_at
+        )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        `,
+        [
+          orderResult.id,
+          line.product.id,
+          line.product.sku,
+          line.product.name,
+          line.quantity,
+          line.product.unit_label || "pièce",
+          line.unitPrice,
+          line.lineTotal,
+          line.colorVariant?.id || null,
+          line.colorVariant?.reference || null,
+          line.colorVariant?.color_name || null,
+          line.colorVariant?.color_hex || null,
+        ]
+      );
+    }
+
+    await auditLog({
+      userId: req.user.sub,
+      role: req.user.role,
+      action: "CATALOG_ORDER_CREATE",
+      entityType: "catalog_order",
+      entityId: String(orderResult.id),
+      metadata: { orderNumber, lineCount: normalizedLines.length },
+      ip: req.ip,
+    });
+
+    const detail = await getCatalogOrderDetail(orderResult.id, client.id);
+    res.status(201).json(detail);
+  } catch (error) {
+    console.error("Erreur création commande mercerie :", error.message);
+    res.status(500).json({ error: "Erreur création commande mercerie" });
+  }
+});
+
+app.get("/api/client/catalog/orders", authRequired, requireClient, async (req, res) => {
+  try {
+    const client = await getUserClient(req.user);
+    if (!client) return res.status(404).json({ error: "Client introuvable" });
+    const orders = await all(
+      `
+        SELECT
+          o.*,
+          COUNT(l.id) AS line_count,
+          COALESCE(SUM(l.line_total), 0) AS order_total,
+          COALESCE(SUM(l.quantity), 0) AS total_quantity
+        FROM catalog_orders o
+        LEFT JOIN catalog_order_lines l ON l.catalog_order_id = o.id
+        WHERE o.client_id = ?
+        GROUP BY o.id
+        ORDER BY o.id DESC
+      `,
+      [client.id]
+    );
+    res.json(orders);
+  } catch (error) {
+    res.status(500).json({ error: "Erreur lecture commandes mercerie" });
+  }
+});
+
+app.get("/api/client/catalog/orders/:id", authRequired, requireClient, async (req, res) => {
+  try {
+    const client = await getUserClient(req.user);
+    if (!client) return res.status(404).json({ error: "Client introuvable" });
+    const detail = await getCatalogOrderDetail(req.params.id, client.id);
+    if (!detail) return res.status(404).json({ error: "Commande introuvable" });
+    res.json(detail);
+  } catch (error) {
+    res.status(500).json({ error: "Erreur lecture commande mercerie" });
+  }
+});
+
+app.get("/api/admin/catalog/categories", authRequired, requireAdmin, async (req, res) => {
+  const categories = await all(`SELECT * FROM catalog_categories ORDER BY display_order ASC, name ASC`);
+  res.json(categories.map((category) => ({ ...category, is_active: Boolean(category.is_active) })));
+});
+
+app.post("/api/admin/catalog/categories", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    if (!body.name || !body.slug) return res.status(400).json({ error: "Nom et slug requis" });
+    const result = await run(
+      `
+        INSERT INTO catalog_categories (name, slug, description, display_order, is_active, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `,
+      [body.name, body.slug, body.description || null, Number(body.display_order || 0), body.is_active === false ? 0 : 1]
+    );
+    await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_CATALOG_CATEGORY_CREATE", entityType: "catalog_category", entityId: String(result.id), ip: req.ip });
+    res.status(201).json(await get(`SELECT * FROM catalog_categories WHERE id = ?`, [result.id]));
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Erreur création catégorie" });
+  }
+});
+
+app.put("/api/admin/catalog/categories/:id", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    await run(
+      `
+        UPDATE catalog_categories
+        SET name = ?, slug = ?, description = ?, display_order = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `,
+      [
+        body.name || "",
+        body.slug || "",
+        body.description || null,
+        Number(body.display_order || 0),
+        body.is_active ? 1 : 0,
+        req.params.id,
+      ]
+    );
+    await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_CATALOG_CATEGORY_UPDATE", entityType: "catalog_category", entityId: String(req.params.id), ip: req.ip });
+    res.json(await get(`SELECT * FROM catalog_categories WHERE id = ?`, [req.params.id]));
+  } catch (error) {
+    res.status(500).json({ error: "Erreur mise à jour catégorie" });
+  }
+});
+
+app.get("/api/admin/catalog/categories/:id", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const category = await get(`SELECT * FROM catalog_categories WHERE id = ?`, [req.params.id]);
+    if (!category) return res.status(404).json({ error: "Catégorie introuvable" });
+    const products = await listCatalogProducts({ categoryId: req.params.id });
+    res.json({
+      ...category,
+      is_active: Boolean(category.is_active),
+      products,
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Erreur lecture catégorie" });
+  }
+});
+
+app.get("/api/admin/catalog/products", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const products = await listCatalogProducts({
+      categoryId: req.query.category_id || null,
+      search: req.query.search || "",
+    });
+    res.json(products);
+  } catch (error) {
+    res.status(500).json({ error: "Erreur lecture produits" });
+  }
+});
+
+function saveCatalogImageDataUrl(dataUrl, fileName = "catalog-image") {
+  if (!dataUrl) return null;
+  const match = String(dataUrl).match(/^data:image\/(png|jpe?g|webp);base64,(.+)$/i);
+  if (!match) throw new Error("Format image invalide. Utilisez JPG, PNG ou WEBP.");
+  const ext = match[1].toLowerCase().replace("jpeg", "jpg");
+  const safeBase = String(fileName)
+    .replace(/\.[^.]+$/, "")
+    .replace(/[^a-z0-9_-]+/gi, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 60) || "catalog-image";
+  const uploadDir = path.join(__dirname, "uploads", "catalog");
+  fs.mkdirSync(uploadDir, { recursive: true });
+  const storedName = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}-${safeBase}.${ext}`;
+  fs.writeFileSync(path.join(uploadDir, storedName), Buffer.from(match[2], "base64"));
+  return `/uploads/catalog/${storedName}`;
+}
+
+function resolveCatalogImageUrl(body = {}) {
+  if (body.image_data_url) {
+    return saveCatalogImageDataUrl(body.image_data_url, body.image_file_name || body.name || "catalog-image");
+  }
+  return body.image_url || body.storage_path || null;
+}
+
+async function saveCatalogProductImage(productId, imageUrl, altText = null) {
+  if (!imageUrl) return;
+  const existing = await get(`SELECT id FROM catalog_product_images WHERE product_id = ? ORDER BY display_order ASC, id ASC LIMIT 1`, [productId]);
+  if (existing) {
+    await run(`UPDATE catalog_product_images SET image_url = ?, alt_text = ? WHERE id = ?`, [imageUrl, altText, existing.id]);
+    return;
+  }
+  await run(
+    `INSERT INTO catalog_product_images (product_id, image_url, alt_text, display_order, created_at) VALUES (?, ?, ?, 0, CURRENT_TIMESTAMP)`,
+    [productId, imageUrl, altText]
+  );
+}
+
+app.get("/api/admin/catalog/products/:id", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const product = await getCatalogProductDetail(req.params.id);
+    if (!product) return res.status(404).json({ error: "Produit introuvable" });
+    res.json(product);
+  } catch (error) {
+    res.status(500).json({ error: "Erreur lecture produit" });
+  }
+});
+
+app.post("/api/admin/catalog/products", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    if (!body.sku || !body.name) return res.status(400).json({ error: "Référence et nom requis" });
+    const imageUrl = resolveCatalogImageUrl(body);
+    const result = await run(
+      `
+        INSERT INTO catalog_products (
+          category_id,
+          sku,
+          name,
+          short_description,
+          description,
+          default_image_url,
+          unit_label,
+          price,
+          currency,
+          stock_quantity,
+          is_active,
+          is_featured,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `,
+      [
+        body.category_id || null,
+        body.sku,
+        body.name,
+        body.short_description || null,
+        body.description || null,
+        imageUrl,
+        body.unit_label || "pièce",
+        body.price === "" || body.price === undefined ? null : Number(body.price),
+        body.currency || "EUR",
+        body.stock_quantity === "" || body.stock_quantity === undefined ? null : Number(body.stock_quantity),
+        body.is_active === false ? 0 : 1,
+        body.is_featured ? 1 : 0,
+      ]
+    );
+    await saveCatalogProductImage(result.id, imageUrl, body.name);
+    await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_CATALOG_PRODUCT_CREATE", entityType: "catalog_product", entityId: String(result.id), ip: req.ip });
+    res.status(201).json((await listCatalogProducts()).find((product) => Number(product.id) === Number(result.id)));
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Erreur création produit" });
+  }
+});
+
+app.put("/api/admin/catalog/products/:id", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const imageUrl = resolveCatalogImageUrl(body);
+    await run(
+      `
+        UPDATE catalog_products
+        SET
+          category_id = ?,
+          sku = ?,
+          name = ?,
+          short_description = ?,
+          description = ?,
+          default_image_url = COALESCE(?, default_image_url),
+          unit_label = ?,
+          price = ?,
+          currency = ?,
+          stock_quantity = ?,
+          is_active = ?,
+          is_featured = ?,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `,
+      [
+        body.category_id || null,
+        body.sku || "",
+        body.name || "",
+        body.short_description || null,
+        body.description || null,
+        imageUrl,
+        body.unit_label || "pièce",
+        body.price === "" || body.price === undefined ? null : Number(body.price),
+        body.currency || "EUR",
+        body.stock_quantity === "" || body.stock_quantity === undefined ? null : Number(body.stock_quantity),
+        body.is_active ? 1 : 0,
+        body.is_featured ? 1 : 0,
+        req.params.id,
+      ]
+    );
+    await saveCatalogProductImage(req.params.id, imageUrl, body.name);
+    await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_CATALOG_PRODUCT_UPDATE", entityType: "catalog_product", entityId: String(req.params.id), ip: req.ip });
+    res.json((await listCatalogProducts()).find((product) => Number(product.id) === Number(req.params.id)));
+  } catch (error) {
+    res.status(500).json({ error: "Erreur mise à jour produit" });
+  }
+});
+
+async function createProductVariant(productId, body = {}) {
+  if (!body.reference) throw new Error("Référence variante requise");
+  if (!body.color_name) throw new Error("Nom couleur requis");
+  const product = await get(`SELECT id FROM catalog_products WHERE id = ?`, [productId]);
+  if (!product) {
+    const error = new Error("Produit introuvable");
+    error.statusCode = 404;
+    throw error;
+  }
+  const imageUrl = resolveCatalogImageUrl({ ...body, name: body.color_name });
+  const result = await run(
+    `
+      INSERT INTO product_variants (
+        product_id,
+        reference,
+        color_name,
+        color_hex,
+        image_url,
+        availability_status,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    `,
+    [
+      productId,
+      body.reference,
+      body.color_name,
+      body.color_hex || null,
+      imageUrl,
+      body.availability_status || "available",
+    ]
+  );
+  return (await listCatalogColorVariants(productId)).find((variant) => Number(variant.id) === Number(result.id));
+}
+
+async function updateProductVariant(variantId, body = {}) {
+  if (!body.reference) throw new Error("Référence variante requise");
+  if (!body.color_name) throw new Error("Nom couleur requis");
+  const existing = await get(`SELECT * FROM product_variants WHERE id = ?`, [variantId]);
+  if (!existing) {
+    const error = new Error("Variante couleur introuvable");
+    error.statusCode = 404;
+    throw error;
+  }
+  const imageUrl = resolveCatalogImageUrl({ ...body, name: body.color_name }) || existing.image_url || null;
+  await run(
+    `
+      UPDATE product_variants
+      SET reference = ?,
+          color_name = ?,
+          color_hex = ?,
+          image_url = ?,
+          availability_status = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `,
+    [
+      body.reference,
+      body.color_name,
+      body.color_hex || null,
+      imageUrl,
+      body.availability_status || "available",
+      variantId,
+    ]
+  );
+  return get(`SELECT * FROM product_variants WHERE id = ?`, [variantId]);
+}
+
+app.get("/api/products/:id", authRequired, async (req, res) => {
+  try {
+    const product = await getCatalogProductDetail(req.params.id, { activeOnly: req.user.role === "client" });
+    if (!product) return res.status(404).json({ error: "Produit introuvable" });
+    res.json(product);
+  } catch (error) {
+    res.status(500).json({ error: "Erreur lecture produit" });
+  }
+});
+
+app.get("/api/products/:id/variants", authRequired, async (req, res) => {
+  try {
+    res.json(await listCatalogColorVariants(req.params.id, { activeOnly: req.user.role === "client" }));
+  } catch (error) {
+    res.status(500).json({ error: "Erreur lecture variantes" });
+  }
+});
+
+app.post("/api/products/:id/variants", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const variant = await createProductVariant(req.params.id, req.body || {});
+    await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_PRODUCT_VARIANT_CREATE", entityType: "product_variant", entityId: String(variant.id), metadata: { productId: req.params.id }, ip: req.ip });
+    res.status(201).json(variant);
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message || "Erreur création variante couleur" });
+  }
+});
+
+app.put("/api/product-variants/:variantId", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const variant = await updateProductVariant(req.params.variantId, req.body || {});
+    await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_PRODUCT_VARIANT_UPDATE", entityType: "product_variant", entityId: String(req.params.variantId), metadata: { productId: variant.product_id }, ip: req.ip });
+    res.json(variant);
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message || "Erreur mise à jour variante couleur" });
+  }
+});
+
+app.delete("/api/product-variants/:variantId", authRequired, requireAdmin, async (req, res) => {
+  const existing = await get(`SELECT * FROM product_variants WHERE id = ?`, [req.params.variantId]);
+  if (!existing) return res.status(404).json({ error: "Variante couleur introuvable" });
+  await run(`DELETE FROM product_variants WHERE id = ?`, [req.params.variantId]);
+  await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_PRODUCT_VARIANT_DELETE", entityType: "product_variant", entityId: String(req.params.variantId), metadata: { productId: existing.product_id }, ip: req.ip });
+  res.json({ success: true });
+});
+
+app.post("/api/admin/catalog/products/:id/color-variants", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const variant = await createProductVariant(req.params.id, req.body || {});
+    await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_PRODUCT_VARIANT_CREATE", entityType: "product_variant", entityId: String(variant.id), metadata: { productId: req.params.id }, ip: req.ip });
+    res.status(201).json(variant);
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message || "Erreur création variante couleur" });
+  }
+});
+
+app.put("/api/admin/catalog/products/:id/color-variants/:variantId", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const variant = await updateProductVariant(req.params.variantId, req.body || {});
+    res.json(variant);
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ error: error.message || "Erreur mise à jour variante couleur" });
+  }
+});
+
+app.delete("/api/admin/catalog/products/:id/color-variants/:variantId", authRequired, requireAdmin, async (req, res) => {
+  await run(`DELETE FROM product_variants WHERE id = ? AND product_id = ?`, [req.params.variantId, req.params.id]);
+  await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_PRODUCT_VARIANT_DELETE", entityType: "product_variant", entityId: String(req.params.variantId), metadata: { productId: req.params.id }, ip: req.ip });
+  res.json({ success: true });
+});
+
+app.delete("/api/admin/catalog/products/:id", authRequired, requireAdmin, async (req, res) => {
+  await run(`UPDATE catalog_products SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [req.params.id]);
+  await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_CATALOG_PRODUCT_DISABLE", entityType: "catalog_product", entityId: String(req.params.id), ip: req.ip });
+  res.json({ success: true });
+});
+
+app.post("/api/admin/catalog/products/:id/images", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const imageUrl = resolveCatalogImageUrl(body);
+    if (!imageUrl) return res.status(400).json({ error: "image_url requis" });
+    const result = await run(
+      `
+        INSERT INTO catalog_product_images (product_id, image_url, storage_path, alt_text, display_order, created_at)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `,
+      [req.params.id, imageUrl, body.storage_path || null, body.alt_text || null, Number(body.display_order || 0)]
+    );
+    res.status(201).json(await get(`SELECT * FROM catalog_product_images WHERE id = ?`, [result.id]));
+  } catch (error) {
+    res.status(500).json({ error: "Erreur ajout image" });
+  }
+});
+
+app.delete("/api/admin/catalog/images/:id", authRequired, requireAdmin, async (req, res) => {
+  await run(`DELETE FROM catalog_product_images WHERE id = ?`, [req.params.id]);
+  res.json({ success: true });
+});
+
+app.get("/api/admin/catalog/orders", authRequired, requireAdmin, async (req, res) => {
+  const orders = await all(
+    `
+      SELECT
+        o.*,
+        c.company_name,
+        COUNT(l.id) AS line_count,
+        COALESCE(SUM(l.line_total), 0) AS order_total,
+        COALESCE(SUM(l.quantity), 0) AS total_quantity
+      FROM catalog_orders o
+      LEFT JOIN portal_clients c ON c.id = o.client_id
+      LEFT JOIN catalog_order_lines l ON l.catalog_order_id = o.id
+      GROUP BY o.id
+      ORDER BY o.id DESC
+    `
+  );
+  res.json(orders);
+});
+
+app.get("/api/admin/catalog/orders/:id", authRequired, requireAdmin, async (req, res) => {
+  const detail = await getCatalogOrderDetail(req.params.id);
+  if (!detail) return res.status(404).json({ error: "Commande introuvable" });
+  res.json(detail);
+});
+
+app.put("/api/admin/catalog/orders/:id/status", authRequired, requireAdmin, async (req, res) => {
+  const allowed = ["draft", "submitted", "confirmed", "preparing", "ready", "delivered", "cancelled"];
+  const status = req.body?.status;
+  if (!allowed.includes(status)) return res.status(400).json({ error: "Statut invalide" });
+  await run(
+    `UPDATE catalog_orders SET status = ?, internal_comment = COALESCE(?, internal_comment), updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    [status, req.body?.internal_comment || null, req.params.id]
+  );
+  await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_CATALOG_ORDER_STATUS_UPDATE", entityType: "catalog_order", entityId: String(req.params.id), metadata: { status }, ip: req.ip });
+  res.json(await getCatalogOrderDetail(req.params.id));
 });
 
 app.get("/api/admin/dashboard", authRequired, requireAdmin, async (req, res) => {

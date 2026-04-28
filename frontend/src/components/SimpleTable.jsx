@@ -1,3 +1,4 @@
+import { isValidElement } from "react";
 import { styles } from "../styles";
 import { adminFieldLabel, formatCell } from "../utils/formatters";
 
@@ -11,11 +12,16 @@ function SimpleTable({ columns, rows, actions }) {
       ))}
       {actions && <div style={styles.tableHead}>Actions</div>}
       {rows.map((row, rowIndex) => (
-        <FragmentRow key={row.id || rowIndex}>
-          {columns.map((column) => (
-            <div key={`${row.id || rowIndex}-${column}`} style={styles.cell}>{formatCell(row[column])}</div>
-          ))}
-          {actions && <div style={styles.cell}>{actions(row)}</div>}
+        <FragmentRow key={row._key || row.id || rowIndex}>
+          {columns.map((column) => {
+            const value = row[column];
+            return (
+              <div key={`${row._key || row.id || rowIndex}-${column}`} style={styles.cell}>
+                {isValidElement(value) ? value : formatCell(value)}
+              </div>
+            );
+          })}
+          {actions && <div key={`${row._key || row.id || rowIndex}-actions`} style={styles.cell}>{actions(row)}</div>}
         </FragmentRow>
       ))}
     </div>
