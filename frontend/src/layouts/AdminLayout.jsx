@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router";
-import { Activity, Building2, ClipboardList, Gauge, LogOut, Mail, Package, ScrollText, Settings, Users } from "lucide-react";
+import { Activity, Building2, ClipboardList, Gauge, LogOut, Mail, MessageCircle, Package, PanelLeft, ScrollText, Settings, Users } from "lucide-react";
 import logoMarkWhite from "../assets/M-DEFONCE.png";
 import { clearSession } from "../auth/session";
 import { api } from "../api/api";
@@ -19,11 +19,34 @@ import AdminSyncLogs from "../pages/admin/AdminSyncLogs";
 import AdminCatalog from "../pages/admin/AdminCatalog";
 import AdminMailTemplates from "../pages/admin/AdminMailTemplates";
 import AdminLogs from "../pages/admin/AdminLogs";
+// === MODULE CHATBOT (POC, retirable) ===
+import AdminChatPage from "../../../chatbot/frontend/AdminChatPage";
+// === FIN MODULE CHATBOT ===
+
+const SIDEBAR_EXPANDED_WIDTH = 288;
+const SIDEBAR_COLLAPSED_WIDTH = 90;
+const STORAGE_KEY = "admin_sidebar_expanded";
+
+function readInitialExpanded() {
+  if (typeof window === "undefined") return true;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (raw === null) return true;
+    return raw === "true";
+  } catch {
+    return true;
+  }
+}
 
 function AdminLayout() {
   const navigate = useNavigate();
   const [pendingCount, setPendingCount] = useState(0);
   const isMobile = useIsMobile(980);
+  // État lu depuis localStorage AVANT le premier render pour éviter le saut visuel.
+  const [expanded, setExpanded] = useState(readInitialExpanded);
+
+  // En mobile, on ignore le toggle : la sidebar passe en bandeau horizontal.
+  const collapsed = !isMobile && !expanded;
 
   async function loadPendingCount() {
     const data = await api("/api/admin/orders/pending-count");
@@ -37,37 +60,109 @@ function AdminLayout() {
     });
   }, []);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, String(expanded));
+    } catch {
+      // localStorage indisponible (mode privé strict) : on continue sans persister.
+    }
+  }, [expanded]);
+
   function logout() {
     clearSession("admin");
     navigate("/admin/login");
   }
 
+  // Animation de la largeur du panneau gauche : on garde le grid mais on transitionne
+  // gridTemplateColumns. Compatible avec les navigateurs modernes.
+  const sidebarWidth = collapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH;
+  const shellStyle = {
+    ...styles.adminShell,
+    ...(isMobile ? styles.adminShellMobile : { gridTemplateColumns: `${sidebarWidth}px minmax(0, 1fr)` }),
+    transition: "grid-template-columns 0.25s ease",
+  };
+
   return (
-    <div style={{ ...styles.adminShell, ...(isMobile ? styles.adminShellMobile : {}) }}>
-      <aside style={{ ...styles.adminSidebar, ...(isMobile ? styles.adminSidebarMobile : {}) }}>
+    <div style={shellStyle}>
+      <aside
+        style={{
+          ...styles.adminSidebar,
+          ...(isMobile ? styles.adminSidebarMobile : {}),
+          ...(collapsed ? { padding: "18px 12px" } : {}),
+          transition: "padding 0.25s ease",
+        }}
+      >
         <div>
-          <div style={styles.adminBrand}>
+          <div
+            style={{
+              ...styles.adminBrand,
+              ...(collapsed ? { flexDirection: "column", gap: 10, padding: "6px 0 18px" } : {}),
+            }}
+          >
             <img src={logoMarkWhite} alt="" style={styles.adminLogo} />
-            <div>
-              <div style={styles.adminBrandTitle}>Admin Toulemonde</div>
-              <div style={styles.adminBrandSub}>Back-office portail</div>
-            </div>
+            {!collapsed && (
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={styles.adminBrandTitle}>Admin Toulemonde</div>
+                <div style={styles.adminBrandSub}>Back-office portail</div>
+              </div>
+            )}
+            {!isMobile && (
+              <button
+                type="button"
+                onClick={() => setExpanded((v) => !v)}
+                title={collapsed ? "Déplier la navigation" : "Replier la navigation"}
+                aria-label={collapsed ? "Déplier la navigation" : "Replier la navigation"}
+                aria-expanded={!collapsed}
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.16)",
+                  background: "rgba(255,255,255,0.06)",
+                  color: "#fff",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                  transition: "background 0.15s ease",
+                  flexShrink: 0,
+                }}
+              >
+                <PanelLeft size={16} strokeWidth={1.8} />
+              </button>
+            )}
           </div>
           <nav style={{ ...styles.adminNav, ...(isMobile ? styles.adminNavMobile : {}) }}>
-            <AdminNavItem to="/admin" label="Dashboard" icon={Gauge} end />
-            <AdminNavItem to="/admin/clients" label="Clients" icon={Building2} />
-            <AdminNavItem to="/admin/users" label="Utilisateurs" icon={Users} />
-            <AdminNavItem to="/admin/orders" label="Commandes" icon={ClipboardList} badge={pendingCount} />
-            <AdminNavItem to="/admin/catalog" label="Catalogue mercerie" icon={Package} />
-            <AdminNavItem to="/admin/mail-templates" label="Templates email" icon={Mail} />
-            <AdminNavItem to="/admin/logs" label="Activité du portail" icon={Activity} />
-            <AdminNavItem to="/admin/connector-sage" label="Connecteur Sage" icon={Settings} />
-            <AdminNavItem to="/admin/sync-logs" label="Logs de synchronisation" icon={ScrollText} />
+            <AdminNavItem to="/admin" label="Dashboard" icon={Gauge} collapsed={collapsed} end />
+            <AdminNavItem to="/admin/clients" label="Clients" icon={Building2} collapsed={collapsed} />
+            <AdminNavItem to="/admin/users" label="Utilisateurs" icon={Users} collapsed={collapsed} />
+            <AdminNavItem to="/admin/orders" label="Commandes" icon={ClipboardList} badge={pendingCount} collapsed={collapsed} />
+            <AdminNavItem to="/admin/catalog" label="Catalogue mercerie" icon={Package} collapsed={collapsed} />
+            <AdminNavItem to="/admin/mail-templates" label="Templates email" icon={Mail} collapsed={collapsed} />
+            <AdminNavItem to="/admin/logs" label="Activité du portail" icon={Activity} collapsed={collapsed} />
+            {/* === MODULE CHATBOT (POC, retirable) === */}
+            {import.meta.env.VITE_CHATBOT_ENABLED === "true" && (
+              <AdminNavItem to="/admin/chat" label="Conversations" icon={MessageCircle} collapsed={collapsed} />
+            )}
+            {/* === FIN MODULE CHATBOT === */}
+            <AdminNavItem to="/admin/connector-sage" label="Connecteur Sage" icon={Settings} collapsed={collapsed} />
+            <AdminNavItem to="/admin/sync-logs" label="Logs de synchronisation" icon={ScrollText} collapsed={collapsed} />
           </nav>
         </div>
         <div style={styles.adminSidebarFooter}>
-          <HealthStatusBadge showSage />
-          <button style={styles.adminLogoutButton} onClick={logout}><LogOut size={17} />Déconnexion</button>
+          {!collapsed && <HealthStatusBadge showSage />}
+          <button
+            style={{
+              ...styles.adminLogoutButton,
+              ...(collapsed ? { justifyContent: "center", padding: 0, width: 46, marginInline: "auto" } : {}),
+            }}
+            onClick={logout}
+            title={collapsed ? "Déconnexion" : undefined}
+            aria-label={collapsed ? "Déconnexion" : undefined}
+          >
+            <LogOut size={17} />
+            {!collapsed && "Déconnexion"}
+          </button>
         </div>
       </aside>
       <main style={{ ...styles.adminMain, ...(isMobile ? styles.adminMainMobile : {}) }}>
@@ -81,6 +176,11 @@ function AdminLayout() {
           <Route path="catalog" element={<AdminCatalog />} />
           <Route path="mail-templates" element={<AdminMailTemplates />} />
           <Route path="logs" element={<AdminLogs />} />
+          {/* === MODULE CHATBOT (POC, retirable) === */}
+          {import.meta.env.VITE_CHATBOT_ENABLED === "true" && (
+            <Route path="chat" element={<AdminChatPage />} />
+          )}
+          {/* === FIN MODULE CHATBOT === */}
           <Route path="connector-sage" element={<AdminConnectorSage />} />
           <Route path="sync-logs" element={<AdminSyncLogs />} />
           <Route path="*" element={<Navigate to="/admin" replace />} />
