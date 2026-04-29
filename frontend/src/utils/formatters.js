@@ -79,6 +79,7 @@ export function adminFieldLabel(field) {
     client_code: "Code client",
     user_display: "Utilisateur portail",
     user_status: "Statut utilisateur",
+    modules_label: "Modules",
     order_number: "N° commande",
     order_type: "Type",
     order_total: "Total",

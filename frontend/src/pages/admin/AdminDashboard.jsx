@@ -4,14 +4,18 @@ import { api } from "../../api/api";
 import { styles } from "../../styles";
 import PageHeader from "../../components/PageHeader";
 import Metric from "../../components/Metric";
+import LoadingState from "../../components/LoadingState";
 
 function AdminDashboard() {
   const navigate = useNavigate();
   const [stats, setStats] = useState(null);
-  useEffect(() => { api("/api/admin/dashboard").then(setStats).catch(console.error); }, []);
+  const [error, setError] = useState("");
+  useEffect(() => { api("/api/admin/dashboard").then(setStats).catch((err) => setError(err.message)); }, []);
   return (
     <div style={styles.pageStack}>
       <PageHeader variant="admin" kicker="Administration" title="Dashboard" subtitle="Pilotage du portail client Toulemonde Production." />
+      {error && <div style={styles.error}>{error}</div>}
+      {!stats && !error && <LoadingState message="Chargement du tableau de bord..." />}
       {(stats?.pendingApproval || 0) > 0 && (
         <button type="button" style={local.notification} onClick={() => navigate("/admin/orders")}>
           <strong>

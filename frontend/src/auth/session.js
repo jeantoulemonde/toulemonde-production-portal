@@ -56,6 +56,10 @@ export function setSession(data, scope = "client") {
   localStorage.removeItem(SESSION_KEYS.legacy.user);
 }
 
+export function userModules(user) {
+  return user?.modules || { yarn: true, mercerie: true };
+}
+
 export function clearSession(scope) {
   const scopes = scope ? [scope] : ["client", "admin", "legacy"];
 

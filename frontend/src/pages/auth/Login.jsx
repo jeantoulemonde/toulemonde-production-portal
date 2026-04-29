@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
+import { Mail, Lock } from "lucide-react";
 import { api } from "../../api/api";
 import { setSession } from "../../auth/session";
 import { T } from "../../theme";
@@ -13,11 +14,10 @@ function Login({ mode = "client" }) {
   const [searchParams] = useSearchParams();
   const isAdmin = mode === "admin";
   const sessionExpired = searchParams.get("expired") === "1";
+  const moduleRevoked = searchParams.get("moduleRevoked") === "1";
 
-  const [email, setEmail] = useState(
-    isAdmin ? "admin@toulemonde.local" : "client@demo.local"
-  );
-  const [password, setPassword] = useState(isAdmin ? "Admin123!" : "Client123!");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
 
@@ -53,7 +53,6 @@ function Login({ mode = "client" }) {
       <section style={loginStyles.formPanel}>
         <form style={loginStyles.card} onSubmit={submit}>
           <div style={loginStyles.logoBlock}>
-            <img src={logoMarkBlue} alt="" style={loginStyles.logoMark} />
             <img
               src={logoToulemondeNew}
               alt="Toulemonde since 1903"
@@ -73,14 +72,17 @@ function Login({ mode = "client" }) {
           </div>
 
           {sessionExpired && !error && <div style={loginStyles.notice}>Votre session a expiré. Veuillez vous reconnecter.</div>}
+          {moduleRevoked && !error && <div style={loginStyles.notice}>Vos accès ont été mis à jour. Reconnectez-vous pour rafraîchir vos modules.</div>}
           {error && <div style={loginStyles.error}>{error}</div>}
 
           <label style={loginStyles.field}>
             <span style={loginStyles.label}>Adresse e-mail</span>
             <div style={loginStyles.inputWrap}>
-              <span style={loginStyles.inputIcon}>✉</span>
+              <Mail size={18} color="rgba(17,22,74,0.48)" aria-hidden="true" />
               <input
                 style={loginStyles.input}
+                type="email"
+                autoComplete="email"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 placeholder="nom@exemple.com"
@@ -91,10 +93,11 @@ function Login({ mode = "client" }) {
           <label style={loginStyles.field}>
             <span style={loginStyles.label}>Mot de passe</span>
             <div style={loginStyles.inputWrap}>
-              <span style={loginStyles.inputIcon}>⌕</span>
+              <Lock size={18} color="rgba(17,22,74,0.48)" aria-hidden="true" />
               <input
                 style={loginStyles.input}
                 type={showPassword ? "text" : "password"}
+                autoComplete="current-password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 placeholder="Votre mot de passe"
@@ -103,6 +106,7 @@ function Login({ mode = "client" }) {
                 type="button"
                 style={loginStyles.eyeButton}
                 onClick={() => setShowPassword((value) => !value)}
+                aria-label={showPassword ? "Masquer le mot de passe" : "Afficher le mot de passe"}
               >
                 {showPassword ? "Masquer" : "Voir"}
               </button>
@@ -127,12 +131,6 @@ function Login({ mode = "client" }) {
             Pas encore de compte ?{" "}
             <span style={loginStyles.footerLink}>Contactez votre administrateur.</span>
           </p>
-
-          <p style={loginStyles.demoText}>
-            {isAdmin
-              ? "Démo admin : admin@toulemonde.local / Admin123!"
-              : "Démo client : client@demo.local / Client123!"}
-          </p>
         </form>
       </section>
     </div>
@@ -152,14 +150,6 @@ const loginStyles = {
   mixBlendMode: "normal",
   zIndex: 2,
 },
-visualImage: {
-  position: "absolute",
-  inset: 0,
-  width: "100%",
-  height: "100%",
-  objectFit: "cover",
-  filter: "grayscale(1) contrast(1.08)",
-},
   page: {
     minHeight: "100vh",
     display: "grid",
@@ -171,7 +161,7 @@ visualImage: {
   visualPanel: {
     position: "relative",
     overflow: "hidden",
-    background: "#050505",
+    background: T.deepBlack,
   },
 
   visualImage: {
@@ -211,10 +201,6 @@ logoBlock: {
   justifyItems: "center",
   gap: 14,
   marginBottom: 26,
-},
-
-logoMark: {
-  display: "none",
 },
 
 logoText: {
@@ -272,13 +258,6 @@ input: {
   minWidth: 0,
 },
 
-  inputIcon: {
-    color: "rgba(17,22,74,0.48)",
-    fontSize: 20,
-    width: 24,
-    textAlign: "center",
-  },
-
   eyeButton: {
     border: "none",
     background: "transparent",
@@ -324,13 +303,6 @@ input: {
   footerLink: {
     color: "rgb(0,0,254)",
     fontWeight: 700,
-  },
-
-  demoText: {
-    margin: 0,
-    textAlign: "center",
-    color: "rgba(17,22,74,0.42)",
-    fontSize: 12,
   },
 
   error: {

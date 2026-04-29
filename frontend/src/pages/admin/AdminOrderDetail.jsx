@@ -3,6 +3,7 @@ import { useParams } from "react-router";
 import { api } from "../../api/api";
 import PageHeader from "../../components/PageHeader";
 import SimpleTable from "../../components/SimpleTable";
+import LoadingState from "../../components/LoadingState";
 import { styles } from "../../styles";
 import { adminFieldLabel, clientStatus, formatDate } from "../../utils/formatters";
 
@@ -10,18 +11,23 @@ function AdminOrderDetail() {
   const { id } = useParams();
   const [data, setData] = useState(null);
   const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
   const [internalComment, setInternalComment] = useState("");
   const [approveOpen, setApproveOpen] = useState(false);
   const [approveComment, setApproveComment] = useState("");
 
   async function load() {
-    const next = await api(`/api/admin/orders/${id}`);
-    setData(next);
-    setInternalComment(next.order?.internal_comment || "");
+    try {
+      const next = await api(`/api/admin/orders/${id}`);
+      setData(next);
+      setInternalComment(next.order?.internal_comment || "");
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
-  useEffect(() => { load().catch(console.error); }, [id]);
+  useEffect(() => { load(); }, [id]);
 
   const specs = useMemo(() => {
     const raw = data?.specs?.[0]?.specs_json;
@@ -33,43 +39,62 @@ function AdminOrderDetail() {
     }
   }, [data]);
 
-  if (!data) return <div style={styles.cardWide}>Chargement...</div>;
+  if (!data && error) return <div style={styles.error}>{error}</div>;
+  if (!data) return <LoadingState message="Chargement de la commande..." />;
 
   const { order } = data;
   const lines = data.lines?.length ? data.lines : specs.lines || [];
   const totalQuantity = lines.reduce((sum, line) => sum + Number(line.quantity_kg || 0), 0) || order.quantity_kg || 0;
 
   async function updateStatus(status, defaultMessage) {
-    await api(`/api/admin/orders/${id}/status`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        status,
-        message: statusMessage || defaultMessage,
-        internal_comment: internalComment,
-      }),
-    });
-    setMessage("Statut mis à jour.");
-    setStatusMessage("");
-    await load();
+    try {
+      setError("");
+      setMessage("");
+      await api(`/api/admin/orders/${id}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          status,
+          message: statusMessage || defaultMessage,
+          internal_comment: internalComment,
+        }),
+      });
+      setMessage("Statut mis à jour.");
+      setStatusMessage("");
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   async function approveOrder() {
-    await api(`/api/orders/${id}/approve`, {
-      method: "POST",
-      body: JSON.stringify({ comment: approveComment }),
-    });
-    setMessage("Commande approuvée.");
-    setApproveOpen(false);
-    setApproveComment("");
-    await load();
+    try {
+      setError("");
+      setMessage("");
+      await api(`/api/orders/${id}/approve`, {
+        method: "POST",
+        body: JSON.stringify({ comment: approveComment }),
+      });
+      setMessage("Commande approuvée.");
+      setApproveOpen(false);
+      setApproveComment("");
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   async function sendToSageNow() {
-    const result = await api(`/api/admin/orders/${id}/force-sync`, { method: "POST" });
-    const processed = result.sync?.processed || 0;
-    const failed = result.sync?.failed || 0;
-    setMessage(`Envoi Sage lancé. Traitées : ${processed}, erreurs : ${failed}.`);
-    await load();
+    try {
+      setError("");
+      setMessage("");
+      const result = await api(`/api/admin/orders/${id}/force-sync`, { method: "POST" });
+      const processed = result.sync?.processed || 0;
+      const failed = result.sync?.failed || 0;
+      setMessage(`Envoi Sage lancé. Traitées : ${processed}, erreurs : ${failed}.`);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   const requestSections = [
@@ -108,6 +133,7 @@ function AdminOrderDetail() {
         subtitle={order.company_name || "Commande portail"}
       />
 
+      {error && <div style={styles.error}>{error}</div>}
       {message && <div style={styles.success}>{message}</div>}
 
       <section style={styles.cardWide}>
@@ -185,8 +211,8 @@ function AdminOrderDetail() {
       </section>
 
       {approveOpen && (
-        <div style={local.modalOverlay} role="dialog" aria-modal="true">
-          <div style={local.modal}>
+        <div style={styles.modalOverlay} role="dialog" aria-modal="true">
+          <div style={styles.modal}>
             <h2 style={styles.cardTitle}>Valider la commande</h2>
             <p style={styles.muted}>Êtes-vous sûr de vouloir valider cette commande ?</p>
             <label style={styles.field}>
@@ -209,10 +235,6 @@ function AdminOrderDetail() {
   );
 }
 
-const local = {
-  modalOverlay: { position: "fixed", inset: 0, zIndex: 500, background: "rgba(0,0,0,0.32)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },
-  modal: { width: "min(560px, 100%)", background: "#fff", borderRadius: 18, padding: 22, display: "grid", gap: 16, boxShadow: "0 28px 80px rgba(0,0,0,0.28)" },
-};
 
 function lineRows(line) {
   const count = line.count_system === "dtex" ? (line.dtex && `${line.dtex} dtex`) : line.yarn_count_nm || line.custom_count;

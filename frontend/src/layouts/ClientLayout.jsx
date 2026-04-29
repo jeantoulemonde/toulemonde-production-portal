@@ -1,12 +1,10 @@
 import { useEffect, useState } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router";
-import { Contact, FileText, Home, LogOut, PanelLeft, PlusCircle, User, ClipboardList } from "lucide-react";
+import { Contact, FileText, Home, LogOut, PanelLeft, PlusCircle, User, ClipboardList, Package, ShoppingCart, ListChecks } from "lucide-react";
 import logoMarkWhite from "../assets/M-DEFONCE.png";
-import logoMarkBlue from "../assets/M-RVB-2.png";
-import { clearSession } from "../auth/session";
+import { clearSession, getSession, userModules } from "../auth/session";
 import { styles } from "../styles";
 import { useIsMobile } from "../utils/useIsMobile";
-import HealthStatusBadge from "../components/HealthStatusBadge";
 import NavItem from "../components/NavItem";
 import ClientDashboard from "../pages/client/ClientDashboard";
 import NewYarnOrder from "../pages/client/NewYarnOrder";
@@ -25,7 +23,9 @@ function ClientLayout() {
   const [menuOpen, setMenuOpen] = useState(false);
   const isMobile = useIsMobile(900);
   const drawerVisible = isMobile ? menuOpen : true;
-  const drawerExpanded = isMobile ? menuOpen : menuOpen;
+  const drawerExpanded = menuOpen;
+  const modules = userModules(getSession("client").user);
+  const isMixte = modules.yarn && modules.mercerie;
   const SIDEBAR_COLLAPSED_WIDTH = 88;
   const SIDEBAR_EXPANDED_WIDTH = 288;
   const mainShift = isMobile ? 0 : drawerExpanded ? SIDEBAR_EXPANDED_WIDTH : SIDEBAR_COLLAPSED_WIDTH;
@@ -67,7 +67,6 @@ function ClientLayout() {
           <div style={styles.brandText}>Toulemonde Production</div>
         </div>
         <div style={styles.headerActions}>
-          <HealthStatusBadge />
           <button style={styles.headerActionButton} onClick={() => navigate("/client/profile")}>Profil</button>
         </div>
       </header>
@@ -85,13 +84,41 @@ function ClientLayout() {
 
         <nav style={styles.nav}>
           <NavItem to="/client" label="Accueil" icon={Home} collapsed={!drawerExpanded} end onNavigate={() => isMobile && setMenuOpen(false)} />
-          <NavItem to="/client/orders/new" label="Nouvelle demande" icon={PlusCircle} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
-          <NavItem to="/client/orders" label="Mes commandes" icon={ClipboardList} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
+
+          {isMixte && drawerExpanded && (
+            <div style={styles.menuSectionLabel}>Fil industriel</div>
+          )}
+          {modules.yarn && (
+            <>
+              <NavItem to="/client/orders/new" label="Nouvelle demande" icon={PlusCircle} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
+              <NavItem to="/client/orders" label={isMixte ? "Mes demandes" : "Mes demandes"} icon={ClipboardList} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
+            </>
+          )}
+
+          {isMixte && drawerExpanded && (
+            <div style={styles.menuSectionLabel}>Mercerie</div>
+          )}
+          {modules.mercerie && (
+            <>
+              <NavItem to="/client/mercerie" label="Catalogue" icon={Package} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
+              <NavItem to="/client/mercerie/cart" label="Panier" icon={ShoppingCart} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
+              <NavItem to="/client/mercerie/orders" label="Commandes mercerie" icon={ListChecks} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
+            </>
+          )}
+
+          {isMixte && drawerExpanded && (
+            <div style={styles.menuSectionLabel}>Mon compte</div>
+          )}
           <NavItem to="/client/documents" label="Documents" icon={FileText} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
           <NavItem to="/client/profile" label="Profil" icon={User} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
           <NavItem to="/client/contact" label="Contact" icon={Contact} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
         </nav>
-        <button style={{ ...styles.logoutButton, ...(!drawerExpanded ? styles.logoutButtonCollapsed : {}) }} onClick={logout} title="Déconnexion">
+        <button
+          style={{ ...styles.logoutButton, ...(!drawerExpanded ? styles.logoutButtonCollapsed : {}) }}
+          onClick={logout}
+          title="Déconnexion"
+          aria-label="Déconnexion"
+        >
           <LogOut size={18} />
           {drawerExpanded && <span>Déconnexion</span>}
         </button>
@@ -101,17 +128,25 @@ function ClientLayout() {
         <div style={styles.mainInner}>
           <Routes>
             <Route index element={<ClientDashboard />} />
-            <Route path="orders/new" element={<NewYarnOrder />} />
-            <Route path="orders" element={<ClientOrders />} />
-            <Route path="orders/:id" element={<ClientOrderDetail />} />
-            <Route path="mercerie" element={<ClientMercerieCatalog />} />
-            <Route path="mercerie/products/:id" element={<ClientMercerieProductDetail />} />
-            <Route path="mercerie/cart" element={<ClientMercerieCart />} />
-            <Route path="mercerie/orders" element={<ClientMercerieOrders />} />
+            {modules.yarn && (
+              <>
+                <Route path="orders/new" element={<NewYarnOrder />} />
+                <Route path="orders" element={<ClientOrders />} />
+                <Route path="orders/:id" element={<ClientOrderDetail />} />
+              </>
+            )}
+            {modules.mercerie && (
+              <>
+                <Route path="mercerie" element={<ClientMercerieCatalog />} />
+                <Route path="mercerie/products/:id" element={<ClientMercerieProductDetail />} />
+                <Route path="mercerie/cart" element={<ClientMercerieCart />} />
+                <Route path="mercerie/orders" element={<ClientMercerieOrders />} />
+              </>
+            )}
             <Route path="documents" element={<ClientDocuments />} />
             <Route path="profile" element={<ClientProfile />} />
             <Route path="contact" element={<ClientContact />} />
-            <Route path="admin/*" element={<Navigate to="/client" replace />} />
+            <Route path="*" element={<Navigate to="/client" replace />} />
           </Routes>
         </div>
       </main>

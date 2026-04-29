@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../../api/api";
 import Field from "../../components/Field";
+import LoadingState from "../../components/LoadingState";
 import PageHeader from "../../components/PageHeader";
 import Select from "../../components/Select";
 import SimpleTable from "../../components/SimpleTable";
@@ -54,7 +55,7 @@ function slugify(value) {
 }
 
 function AdminCatalog() {
-  const [categories, setCategories] = useState([]);
+  const [categories, setCategories] = useState(null);
   const [products, setProducts] = useState([]);
   const [categoryForm, setCategoryForm] = useState(emptyCategory);
   const [editingCategoryId, setEditingCategoryId] = useState(null);
@@ -65,23 +66,28 @@ function AdminCatalog() {
   const [variantForm, setVariantForm] = useState(emptyVariant);
   const [editingVariantId, setEditingVariantId] = useState(null);
   const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
 
   async function load() {
-    const [nextCategories, nextProducts] = await Promise.all([
-      api("/api/admin/catalog/categories"),
-      api("/api/admin/catalog/products"),
-    ]);
-    setCategories(nextCategories);
-    setProducts(nextProducts);
+    try {
+      const [nextCategories, nextProducts] = await Promise.all([
+        api("/api/admin/catalog/categories"),
+        api("/api/admin/catalog/products"),
+      ]);
+      setCategories(nextCategories);
+      setProducts(nextProducts);
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   useEffect(() => {
-    load().catch(console.error);
+    load();
   }, []);
 
   const categoryOptions = useMemo(() => [
     { value: "", label: "Sélectionner une catégorie" },
-    ...categories.map((category) => ({ value: String(category.id), label: category.name })),
+    ...(categories || []).map((category) => ({ value: String(category.id), label: category.name })),
   ], [categories]);
 
   const visibleProducts = useMemo(() => (
@@ -91,17 +97,23 @@ function AdminCatalog() {
   ), [products, selectedCategoryId]);
 
   const selectedCategory = useMemo(() => (
-    categories.find((category) => String(category.id) === String(selectedCategoryId)) || null
+    (categories || []).find((category) => String(category.id) === String(selectedCategoryId)) || null
   ), [categories, selectedCategoryId]);
 
   async function saveCategory(event) {
     event.preventDefault();
-    const path = editingCategoryId ? `/api/admin/catalog/categories/${editingCategoryId}` : "/api/admin/catalog/categories";
-    await api(path, { method: editingCategoryId ? "PUT" : "POST", body: JSON.stringify(categoryForm) });
-    setCategoryForm(emptyCategory);
-    setEditingCategoryId(null);
-    setMessage(editingCategoryId ? "Catégorie modifiée." : "Catégorie créée.");
-    await load();
+    try {
+      setError("");
+      setMessage("");
+      const path = editingCategoryId ? `/api/admin/catalog/categories/${editingCategoryId}` : "/api/admin/catalog/categories";
+      await api(path, { method: editingCategoryId ? "PUT" : "POST", body: JSON.stringify(categoryForm) });
+      setCategoryForm(emptyCategory);
+      setEditingCategoryId(null);
+      setMessage(editingCategoryId ? "Catégorie modifiée." : "Catégorie créée.");
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   function editCategory(category) {
@@ -123,13 +135,19 @@ function AdminCatalog() {
 
   async function saveProduct(event) {
     event.preventDefault();
-    const path = editingProductId ? `/api/admin/catalog/products/${editingProductId}` : "/api/admin/catalog/products";
-    await api(path, { method: editingProductId ? "PUT" : "POST", body: JSON.stringify(productForm) });
-    setProductForm(emptyProduct);
-    setEditingProductId(null);
-    setMessage(editingProductId ? "Produit modifié." : "Produit créé.");
-    await load();
-    if (editingProductId) await loadProductDetail(editingProductId);
+    try {
+      setError("");
+      setMessage("");
+      const path = editingProductId ? `/api/admin/catalog/products/${editingProductId}` : "/api/admin/catalog/products";
+      await api(path, { method: editingProductId ? "PUT" : "POST", body: JSON.stringify(productForm) });
+      setProductForm(emptyProduct);
+      setEditingProductId(null);
+      setMessage(editingProductId ? "Produit modifié." : "Produit créé.");
+      await load();
+      if (editingProductId) await loadProductDetail(editingProductId);
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   function editProduct(product) {
@@ -190,14 +208,20 @@ function AdminCatalog() {
   async function saveVariant(event) {
     event.preventDefault();
     if (!selectedProduct) return;
-    const path = editingVariantId
-      ? `/api/product-variants/${editingVariantId}`
-      : `/api/products/${selectedProduct.id}/variants`;
-    await api(path, { method: editingVariantId ? "PUT" : "POST", body: JSON.stringify(variantForm) });
-    setVariantForm(emptyVariant);
-    setEditingVariantId(null);
-    setMessage(editingVariantId ? "Variante couleur modifiée." : "Variante couleur ajoutée.");
-    await loadProductDetail(selectedProduct.id);
+    try {
+      setError("");
+      setMessage("");
+      const path = editingVariantId
+        ? `/api/product-variants/${editingVariantId}`
+        : `/api/products/${selectedProduct.id}/variants`;
+      await api(path, { method: editingVariantId ? "PUT" : "POST", body: JSON.stringify(variantForm) });
+      setVariantForm(emptyVariant);
+      setEditingVariantId(null);
+      setMessage(editingVariantId ? "Variante couleur modifiée." : "Variante couleur ajoutée.");
+      await loadProductDetail(selectedProduct.id);
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   function editVariant(variant) {
@@ -215,15 +239,27 @@ function AdminCatalog() {
 
   async function deleteVariant(variant) {
     if (!selectedProduct) return;
-    await api(`/api/product-variants/${variant.id}`, { method: "DELETE" });
-    setMessage("Variante couleur supprimée.");
-    await loadProductDetail(selectedProduct.id);
+    try {
+      setError("");
+      setMessage("");
+      await api(`/api/product-variants/${variant.id}`, { method: "DELETE" });
+      setMessage("Variante couleur supprimée.");
+      await loadProductDetail(selectedProduct.id);
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   async function disableProduct(product) {
-    await api(`/api/admin/catalog/products/${product.id}`, { method: "DELETE" });
-    setMessage("Produit désactivé.");
-    await load();
+    try {
+      setError("");
+      setMessage("");
+      await api(`/api/admin/catalog/products/${product.id}`, { method: "DELETE" });
+      setMessage("Produit désactivé.");
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   const productImagePreview = productForm.image_data_url || backendAssetUrl(productForm.image_url);
@@ -238,7 +274,9 @@ function AdminCatalog() {
         subtitle="Gérez les catégories et articles standards visibles dans le portail client."
       />
 
+      {error && <div style={styles.error}>{error}</div>}
       {message && <div style={styles.success}>{message}</div>}
+      {categories === null && <LoadingState message="Chargement du catalogue..." />}
 
       <section style={styles.cardWide}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
@@ -262,7 +300,7 @@ function AdminCatalog() {
             <strong>Toutes les catégories</strong>
             <span style={{ color: T.textSoft }}>{products.length} produits</span>
           </button>
-          {categories.map((category) => {
+          {(categories || []).map((category) => {
             const count = products.filter((product) => String(product.category_id) === String(category.id)).length;
             const active = String(selectedCategoryId) === String(category.id);
             return (
@@ -278,7 +316,7 @@ function AdminCatalog() {
               >
                 <strong>{category.name}</strong>
                 <span style={{ color: T.textSoft }}>{count} produits liés</span>
-                <span style={{ fontSize: 12, color: category.is_active ? T.success : T.textSoft }}>{category.is_active ? "Visible" : "Masquée"}</span>
+                <span style={{ fontSize: 12, color: category.is_active ? T.green : T.textSoft }}>{category.is_active ? "Visible" : "Masquée"}</span>
               </button>
             );
           })}

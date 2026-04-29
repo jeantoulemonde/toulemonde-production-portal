@@ -16,6 +16,7 @@ function NavItem({ to, label, icon: Icon, collapsed = false, end = false, onNavi
         borderColor: isActive ? T.bleuBorder : T.border,
       })}
       title={collapsed ? label : undefined}
+      aria-label={collapsed ? label : undefined}
     >
       {Icon && <Icon size={18} strokeWidth={1.8} />}
       {!collapsed && <span>{label}</span>}

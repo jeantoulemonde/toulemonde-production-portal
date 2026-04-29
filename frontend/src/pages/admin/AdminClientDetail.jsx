@@ -7,66 +7,112 @@ import PageHeader from "../../components/PageHeader";
 import AdminInput from "../../components/AdminInput";
 import ClientOrdersTable from "../../components/ClientOrdersTable";
 import ProfileSection from "../../components/ProfileSection";
+import LoadingState from "../../components/LoadingState";
 
 function AdminClientDetail() {
   const { id } = useParams();
   const [data, setData] = useState(null);
   const [client, setClient] = useState({});
   const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
 
   async function load() {
-    const next = await api(`/api/admin/clients/${id}`);
-    setData(next);
-    setClient(next.client);
+    try {
+      const next = await api(`/api/admin/clients/${id}`);
+      setData(next);
+      setClient(next.client);
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
-  useEffect(() => { load().catch(console.error); }, [id]);
+  useEffect(() => { load(); }, [id]);
 
   async function save(event) {
     event.preventDefault();
-    await api(`/api/admin/clients/${id}`, { method: "PUT", body: JSON.stringify(client) });
-    setMessage("Client enregistré.");
-    await load();
+    try {
+      setError("");
+      setMessage("");
+      await api(`/api/admin/clients/${id}`, { method: "PUT", body: JSON.stringify(client) });
+      setMessage("Client enregistré.");
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function saveModules() {
+    try {
+      setError("");
+      setMessage("");
+      await api(`/api/admin/clients/${id}/modules`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          access_yarn: Boolean(client.access_yarn),
+          access_mercerie: Boolean(client.access_mercerie),
+        }),
+      });
+      setMessage("Modules mis à jour. Les utilisateurs verront le changement à leur prochaine connexion.");
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   async function resetPassword() {
-    const user = linkedUser;
-    if (!user) return setMessage("Aucun utilisateur client lié.");
-    const result = await api(`/api/admin/users/${user.id}/reset-password`, { method: "POST" });
-    setMessage(`Lien de réinitialisation : ${result.resetLink}`);
+    try {
+      setError("");
+      const user = linkedUser;
+      if (!user) return setMessage("Aucun utilisateur client lié.");
+      const result = await api(`/api/admin/users/${user.id}/reset-password`, { method: "POST" });
+      setMessage(`Lien de réinitialisation : ${result.resetLink}`);
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   async function toggleLinkedUserStatus() {
-    const user = linkedUser;
-    if (!user) return setMessage("Aucun utilisateur client lié.");
-    const nextActive = !(user.is_active === 1 || user.status === "active");
+    try {
+      setError("");
+      const user = linkedUser;
+      if (!user) return setMessage("Aucun utilisateur client lié.");
+      const nextActive = !(user.is_active === 1 || user.status === "active");
 
-    await api(`/api/admin/users/${user.id}/status`, {
-      method: "PATCH",
-      body: JSON.stringify({ is_active: nextActive }),
-    });
+      await api(`/api/admin/users/${user.id}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({ is_active: nextActive }),
+      });
 
-    setMessage(nextActive ? "Utilisateur réactivé." : "Utilisateur désactivé.");
-    await load();
+      setMessage(nextActive ? "Utilisateur réactivé." : "Utilisateur désactivé.");
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   async function createLinkedUser() {
-    const email = client.contact_email || client.email;
-    if (!email) return setMessage("Ajoutez un email de contact avant de créer l'utilisateur.");
-    const result = await api("/api/admin/users", {
-      method: "POST",
-      body: JSON.stringify({
-        full_name: client.contact_name || client.company_name,
-        email,
-        role: "client",
-        client_id: client.id,
-      }),
-    });
-    setMessage(`Utilisateur créé. Invitation : ${result.invitationLink}`);
-    await load();
+    try {
+      setError("");
+      const email = client.contact_email || client.email;
+      if (!email) return setMessage("Ajoutez un email de contact avant de créer l'utilisateur.");
+      const result = await api("/api/admin/users", {
+        method: "POST",
+        body: JSON.stringify({
+          full_name: client.contact_name || client.company_name,
+          email,
+          role: "client",
+          client_id: client.id,
+        }),
+      });
+      setMessage(`Utilisateur créé. Invitation : ${result.invitationLink}`);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
-  if (!data) return <div style={styles.cardWide}>Chargement...</div>;
+  if (!data && error) return <div style={styles.error}>{error}</div>;
+  if (!data) return <LoadingState message="Chargement du client..." />;
 
   const linkedUser = data.users?.[0] || (client.user_id ? {
     id: client.user_id,
@@ -83,6 +129,7 @@ function AdminClientDetail() {
       <PageHeader variant="admin" kicker="Administration" title={client.company_name || "Client"} subtitle="Détail client, coordonnées, informations Sage et commandes liées.">
         {linkedUser && <button type="button" style={styles.ghostButton} onClick={resetPassword}>Réinitialiser mot de passe</button>}
       </PageHeader>
+      {error && <div style={styles.error}>{error}</div>}
       {message && <div style={styles.success}>{message}</div>}
       <ProfileSection title="Informations société">
         {["company_name", "vat_number", "contact_email", "phone"].map((field) => <AdminInput key={field} field={field} value={client[field]} onChange={(value) => setClient({ ...client, [field]: value })} />)}
@@ -99,6 +146,31 @@ function AdminClientDetail() {
       <ProfileSection title="Informations ERP">
         {["sage_customer_code", "last_sync_status", "last_sync_at"].map((field) => <AdminInput key={field} field={field} value={client[field]} onChange={(value) => setClient({ ...client, [field]: value })} />)}
       </ProfileSection>
+      <section style={styles.cardWide}>
+        <h2 style={styles.cardTitle}>Modules accessibles</h2>
+        <p style={styles.muted}>Définit ce que les utilisateurs de ce client voient dans le portail. Au moins un module obligatoire.</p>
+        <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+          <label style={styles.checkLine}>
+            <input
+              type="checkbox"
+              checked={Boolean(client.access_yarn)}
+              onChange={(e) => setClient({ ...client, access_yarn: e.target.checked ? 1 : 0 })}
+            />
+            Demandes fil industriel
+          </label>
+          <label style={styles.checkLine}>
+            <input
+              type="checkbox"
+              checked={Boolean(client.access_mercerie)}
+              onChange={(e) => setClient({ ...client, access_mercerie: e.target.checked ? 1 : 0 })}
+            />
+            Catalogue & commandes mercerie
+          </label>
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <button type="button" style={styles.primaryButton} onClick={saveModules}>Sauvegarder modules</button>
+        </div>
+      </section>
       <section style={styles.cardWide}>
         <h2 style={styles.cardTitle}>Utilisateur portail</h2>
         {linkedUser ? (

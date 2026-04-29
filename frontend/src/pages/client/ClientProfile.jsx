@@ -98,7 +98,7 @@ function ClientProfile() {
         </aside>
 
         <main style={profileStyles.content}>
-          <Section title="Informations société" defaultOpen>
+          <Section title="Informations société" defaultOpen isMobile={isMobile}>
             <Field label="Société">
               <input
                 style={profileStyles.input}
@@ -132,7 +132,7 @@ function ClientProfile() {
             </Field>
           </Section>
 
-          <Section title="Adresse de facturation">
+          <Section title="Adresse de facturation" isMobile={isMobile}>
             <Field label="Adresse" full>
               <input
                 style={profileStyles.input}
@@ -166,7 +166,7 @@ function ClientProfile() {
             </Field>
           </Section>
 
-          <Section title="Adresse de livraison">
+          <Section title="Adresse de livraison" isMobile={isMobile}>
             <Field label="Adresse" full>
               <input
                 style={profileStyles.input}
@@ -200,7 +200,7 @@ function ClientProfile() {
             </Field>
           </Section>
 
-          <Section title="Contact principal">
+          <Section title="Contact principal" isMobile={isMobile}>
             <Field label="Nom">
               <input
                 style={profileStyles.input}
@@ -237,9 +237,8 @@ function ClientProfile() {
   );
 }
 
-function Section({ title, children, defaultOpen = false }) {
+function Section({ title, children, defaultOpen = false, isMobile = false }) {
   const [open, setOpen] = useState(defaultOpen);
-  const isMobile = useIsMobile(760);
 
   return (
     <section style={profileStyles.section}>

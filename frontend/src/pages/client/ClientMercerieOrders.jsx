@@ -18,10 +18,11 @@ const statusLabels = {
 
 function ClientMercerieOrders() {
   const navigate = useNavigate();
-  const [orders, setOrders] = useState([]);
+  const [orders, setOrders] = useState(null);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    api("/api/client/catalog/orders").then(setOrders).catch(console.error);
+    api("/api/client/catalog/orders").then(setOrders).catch((err) => setError(err.message));
   }, []);
 
   return (
@@ -34,15 +35,29 @@ function ClientMercerieOrders() {
         <button style={styles.primaryButton} onClick={() => navigate("/client/mercerie")}>Nouvelle commande mercerie</button>
       </PageHeader>
 
+      {error && <div style={styles.error}>{error}</div>}
       <section style={styles.cardWide}>
-        <SimpleTable
-          columns={["order_number", "customer_reference", "line_count", "order_total", "status", "requested_delivery_date", "created_at"]}
-          rows={orders.map((order) => ({
-            ...order,
-            status: statusLabels[order.status] || order.status,
-            order_total: Number(order.order_total || 0).toFixed(2),
-          }))}
-        />
+        {orders === null ? (
+          <div style={styles.emptyState}>Chargement des commandes...</div>
+        ) : !orders.length ? (
+          <div style={styles.emptyState}>
+            Aucune commande mercerie pour le moment.
+            <div style={{ marginTop: 12 }}>
+              <button type="button" style={styles.primaryButton} onClick={() => navigate("/client/mercerie")}>
+                Voir le catalogue
+              </button>
+            </div>
+          </div>
+        ) : (
+          <SimpleTable
+            columns={["order_number", "customer_reference", "line_count", "order_total", "status", "requested_delivery_date", "created_at"]}
+            rows={orders.map((order) => ({
+              ...order,
+              status: statusLabels[order.status] || order.status,
+              order_total: Number(order.order_total || 0).toFixed(2),
+            }))}
+          />
+        )}
       </section>
     </PageContainer>
   );

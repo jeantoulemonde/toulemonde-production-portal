@@ -8,30 +8,34 @@ import PageContainer from "../../components/PageContainer";
 
 function ClientOrders() {
   const navigate = useNavigate();
-  const [orders, setOrders] = useState([]);
-  const [typeFilter, setTypeFilter] = useState("all");
+  const [orders, setOrders] = useState(null);
   const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
   async function loadOrders() {
-    const [technicalOrders, catalogOrders] = await Promise.all([
-      api("/api/client/orders"),
-      api("/api/client/catalog/orders"),
-    ]);
-    setOrders([
-      ...technicalOrders.map((order) => ({ ...order, order_type: "technical" })),
-      ...catalogOrders.map((order) => ({
-        ...order,
-        order_type: "catalog",
-        client_reference: order.customer_reference,
-        total_quantity_kg: order.total_quantity,
-      })),
-    ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)));
+    try {
+      const technicalOrders = await api("/api/client/orders");
+      setOrders(
+        technicalOrders
+          .map((order) => ({ ...order, order_type: "technical" }))
+          .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      );
+    } catch (err) {
+      setError(err.message);
+    }
   }
-  useEffect(() => { loadOrders().catch(console.error); }, []);
+  useEffect(() => { loadOrders(); }, []);
 
   async function deleteDraft(order) {
-    await api(`/api/client/orders/${order.id}`, { method: "DELETE" });
-    setMessage("Brouillon supprimé.");
-    await loadOrders();
+    try {
+      setError("");
+      setMessage("");
+      await api(`/api/client/orders/${order.id}`, { method: "DELETE" });
+      setMessage("Brouillon supprimé.");
+      await loadOrders();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   async function submitDraft(order) {
@@ -48,48 +52,51 @@ function ClientOrders() {
     <PageContainer>
       <PageHeader
         kicker="Portail client"
-        title="Mes demandes"
+        title="Mes demandes de fil"
         subtitle="Consultez l’historique et l’avancement de vos demandes de production."
-      />
+      >
+        <button style={styles.primaryButton} onClick={() => navigate("/client/orders/new")}>Nouvelle demande</button>
+      </PageHeader>
+      {error && <div style={styles.error}>{error}</div>}
       {message && <div style={message.includes("incomplète") || message.includes("manqu") ? styles.error : styles.success}>{message}</div>}
-      <section style={styles.cardWide}>
-        <div style={styles.formActions}>
-          <button type="button" style={typeFilter === "all" ? styles.primaryButton : styles.ghostButton} onClick={() => setTypeFilter("all")}>Toutes</button>
-          <button type="button" style={typeFilter === "technical" ? styles.primaryButton : styles.ghostButton} onClick={() => setTypeFilter("technical")}>Industriel</button>
-          <button type="button" style={typeFilter === "catalog" ? styles.primaryButton : styles.ghostButton} onClick={() => setTypeFilter("catalog")}>Mercerie</button>
-        </div>
-      </section>
       <OrderList
         title="Demandes de commande"
-        orders={orders.filter((order) => typeFilter === "all" || order.order_type === typeFilter)}
+        orders={orders || []}
         onOpen={(order) => navigate(`/client/orders/${order.id}`)}
         onResume={(order) => navigate(`/client/orders/new?draftId=${order.id}`)}
-        onOpenCatalog={() => navigate("/client/mercerie/orders")}
         onDeleteDraft={deleteDraft}
         onSubmitDraft={submitDraft}
+        onCreateNew={() => navigate("/client/orders/new")}
       />
     </PageContainer>
   );
 }
 
-function OrderList({ title, orders, onOpen, onResume, onOpenCatalog, onDeleteDraft, onSubmitDraft }) {
+function OrderList({ title, orders, onOpen, onResume, onDeleteDraft, onSubmitDraft, onCreateNew }) {
   return (
     <section style={styles.cardWide}>
       <h2 style={styles.cardTitle}>{title}</h2>
-      <ClientOrdersTable
-        orders={orders}
-        columns={["type", "order", "reference", "lines", "application", "material", "count", "quantity", "status", "date"]}
-        empty="Aucune demande pour le moment."
-        actions={(order) => order.order_type === "catalog" ? (
-          <button style={styles.linkButton} onClick={onOpenCatalog}>Commandes mercerie</button>
-        ) : order.status === "draft" ? (
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <button style={styles.linkButton} onClick={() => onResume(order)}>Reprendre</button>
-            <button style={styles.linkButton} onClick={() => onSubmitDraft(order)}>Soumettre</button>
-            <button style={styles.linkButton} onClick={() => onDeleteDraft(order)}>Supprimer</button>
+      {!orders.length ? (
+        <div style={styles.emptyState}>
+          Vous n'avez pas encore fait de demande de fil.
+          <div style={{ marginTop: 12 }}>
+            <button style={styles.primaryButton} onClick={onCreateNew}>Démarrer une demande</button>
           </div>
-        ) : <button style={styles.linkButton} onClick={() => onOpen(order)}>Détail</button>}
-      />
+        </div>
+      ) : (
+        <ClientOrdersTable
+          orders={orders}
+          columns={["order", "reference", "lines", "application", "material", "count", "quantity", "status", "date"]}
+          empty="Aucune demande pour le moment."
+          actions={(order) => order.status === "draft" ? (
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button style={styles.linkButton} onClick={() => onResume(order)}>Reprendre</button>
+              <button style={styles.linkButton} onClick={() => onSubmitDraft(order)}>Soumettre</button>
+              <button style={styles.linkButton} onClick={() => onDeleteDraft(order)}>Supprimer</button>
+            </div>
+          ) : <button style={styles.linkButton} onClick={() => onOpen(order)}>Détail</button>}
+        />
+      )}
     </section>
   );
 }

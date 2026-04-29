@@ -72,30 +72,35 @@ const local = {
 function ClientMercerieCatalog() {
   const navigate = useNavigate();
   const [categories, setCategories] = useState([]);
-  const [products, setProducts] = useState([]);
+  const [products, setProducts] = useState(null);
   const [categoryId, setCategoryId] = useState("");
   const [search, setSearch] = useState("");
   const [quantities, setQuantities] = useState({});
   const [cartCount, setCartCount] = useState(readMercerieCart().length);
   const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
   const isMobile = useIsMobile(900);
 
   async function load() {
-    const [nextCategories, nextProducts] = await Promise.all([
-      api("/api/client/catalog/categories"),
-      api("/api/client/catalog/products"),
-    ]);
-    setCategories(nextCategories);
-    setProducts(nextProducts);
+    try {
+      const [nextCategories, nextProducts] = await Promise.all([
+        api("/api/client/catalog/categories"),
+        api("/api/client/catalog/products"),
+      ]);
+      setCategories(nextCategories);
+      setProducts(nextProducts);
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   useEffect(() => {
-    load().catch(console.error);
+    load();
   }, []);
 
   const filteredProducts = useMemo(() => {
     const lower = search.trim().toLowerCase();
-    return products.filter((product) => {
+    return (products || []).filter((product) => {
       const matchesCategory = !categoryId || String(product.category_id) === String(categoryId);
       const haystack = `${product.name} ${product.sku} ${product.short_description || ""}`.toLowerCase();
       return matchesCategory && (!lower || haystack.includes(lower));
@@ -120,6 +125,7 @@ function ClientMercerieCatalog() {
         </button>
       </PageHeader>
 
+      {error && <div style={styles.error}>{error}</div>}
       {message && <div style={styles.success}>{message}</div>}
 
       <section style={styles.cardWide}>
@@ -182,7 +188,11 @@ function ClientMercerieCatalog() {
         ))}
       </section>
 
-      {!filteredProducts.length && <div style={styles.emptyState}>Aucun produit ne correspond à votre recherche.</div>}
+      {products === null ? (
+        <div style={styles.emptyState}>Chargement du catalogue...</div>
+      ) : (
+        !filteredProducts.length && <div style={styles.emptyState}>Aucun produit ne correspond à votre recherche.</div>
+      )}
     </PageContainer>
   );
 }

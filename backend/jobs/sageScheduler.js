@@ -12,17 +12,11 @@ function createSageScheduler({ getConnectorConfig, runSageImport, runSageExport 
     const connector = await getConnectorConfig();
     const config = connector.config || {};
 
-    if (!connector.enabled) {
-      console.log("[SAGE SCHEDULER] connecteur désactivé");
-      return;
-    }
-
-    console.log("Running Sage automatic sync...");
+    // Pas de log si désactivé : déjà loggué au boot, inutile de répéter à chaque cycle.
+    if (!connector.enabled) return;
 
     if (config.inbound?.enabled !== false) {
-      if (importRunning) {
-        console.log("[SAGE SCHEDULER] import ignoré, exécution déjà en cours");
-      } else {
+      if (!importRunning) {
         importRunning = true;
         try {
           await runSageImport();
@@ -35,9 +29,7 @@ function createSageScheduler({ getConnectorConfig, runSageImport, runSageExport 
     }
 
     if (config.outbound?.enabled === true) {
-      if (exportRunning) {
-        console.log("[SAGE SCHEDULER] export ignoré, exécution déjà en cours");
-      } else {
+      if (!exportRunning) {
         exportRunning = true;
         try {
           await runSageExport();

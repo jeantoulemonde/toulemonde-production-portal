@@ -23,35 +23,59 @@ function AdminConnectorSage() {
   const [config, setConfig] = useState(defaultConfig);
   const [status, setStatus] = useState(null);
   const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
 
   async function load() {
-    const data = await api("/api/admin/connector-sage");
-    setEnabled(data.enabled);
-    setStatus(data);
-    setConfig({ ...defaultConfig, ...(data.config || {}), inbound: { ...defaultConfig.inbound, ...(data.config?.inbound || {}) }, outbound: { ...defaultConfig.outbound, ...(data.config?.outbound || {}) } });
+    try {
+      const data = await api("/api/admin/connector-sage");
+      setEnabled(data.enabled);
+      setStatus(data);
+      setConfig({ ...defaultConfig, ...(data.config || {}), inbound: { ...defaultConfig.inbound, ...(data.config?.inbound || {}) }, outbound: { ...defaultConfig.outbound, ...(data.config?.outbound || {}) } });
+    } catch (err) {
+      setError(err.message);
+    }
   }
-  useEffect(() => { load().catch(console.error); }, []);
+  useEffect(() => { load(); }, []);
   function update(field, value) { setConfig((prev) => ({ ...prev, [field]: value })); }
   function updateNested(group, field, value) { setConfig((prev) => ({ ...prev, [group]: { ...prev[group], [field]: value } })); }
   async function save() {
-    await api("/api/admin/connector-sage", { method: "PUT", body: JSON.stringify({ enabled, config }) });
-    setMessage("Configuration enregistrée.");
-    await load();
+    try {
+      setError("");
+      setMessage("");
+      await api("/api/admin/connector-sage", { method: "PUT", body: JSON.stringify({ enabled, config }) });
+      setMessage("Configuration enregistrée.");
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   }
   async function test() {
-    await api("/api/admin/connector-sage", { method: "PUT", body: JSON.stringify({ enabled, config }) });
-    const result = await api("/api/admin/connector-sage/test", { method: "POST" });
-    setMessage(result.connected ? result.message : `Connexion SageSimu échouée : ${result.message}`);
-    await load();
+    try {
+      setError("");
+      setMessage("");
+      await api("/api/admin/connector-sage", { method: "PUT", body: JSON.stringify({ enabled, config }) });
+      const result = await api("/api/admin/connector-sage/test", { method: "POST" });
+      setMessage(result.connected ? result.message : `Connexion SageSimu échouée : ${result.message}`);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   }
   async function runSync(path) {
-    const result = await api(path, { method: "POST" });
-    setMessage(`Synchronisation déclenchée : ${JSON.stringify(result)}`);
-    await load();
+    try {
+      setError("");
+      setMessage("");
+      const result = await api(path, { method: "POST" });
+      setMessage(`Synchronisation déclenchée. ${result.processed || 0} traitée(s), ${result.failed || 0} échec(s).`);
+      await load();
+    } catch (err) {
+      setError(err.message);
+    }
   }
   return (
     <div style={styles.pageStack}>
       <PageHeader variant="admin" kicker="Administration" title="Connecteur Sage" subtitle="Configuration admin des échanges entre le portail et Sage." />
+      {error && <div style={styles.error}>{error}</div>}
       {message && <div style={styles.success}>{message}</div>}
       <section style={styles.cardWide}>
         <h2 style={styles.cardTitle}>Statut</h2>
@@ -60,6 +84,16 @@ function AdminConnectorSage() {
           <Metric title="Dernier test" value={formatDateTime(status?.last_check_at)} />
           <Metric title="Entrant" value={formatDateTime(status?.last_inbound_sync_at)} />
           <Metric title="Sortant" value={formatDateTime(status?.last_outbound_sync_at)} />
+          <Metric
+            title="Agent leon"
+            value={
+              status?.agent?.status === "online"
+                ? `🟢 online (${formatDateTime(status?.agent?.last_seen_at)})`
+                : status?.agent?.last_seen_at
+                  ? `🔴 offline (vu ${formatDateTime(status?.agent?.last_seen_at)})`
+                  : "🔴 jamais connecté"
+            }
+          />
         </div>
         {status?.last_error && <div style={{ ...styles.error, marginTop: 14 }}>{status.last_error}</div>}
       </section>

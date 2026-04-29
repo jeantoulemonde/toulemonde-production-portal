@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { PlusCircle } from "lucide-react";
+import { PlusCircle, Package, ShoppingCart } from "lucide-react";
 import atelierMachines from "../../assets/atelier-machines.png";
 import { api } from "../../api/api";
 import ClientOrdersTable from "../../components/ClientOrdersTable";
@@ -10,17 +10,25 @@ import { styles } from "../../styles";
 import { T } from "../../theme";
 import { formatDateTime } from "../../utils/formatters";
 import { useIsMobile } from "../../utils/useIsMobile";
+import { getSession, userModules } from "../../auth/session";
+import { readMercerieCart } from "../../utils/mercerieCart";
 
 function ClientDashboard() {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
+  const modules = userModules(getSession("client").user);
+  const isMixte = modules.yarn && modules.mercerie;
   const [orders, setOrders] = useState([]);
+  const [mercerieOrders, setMercerieOrders] = useState([]);
   const [profile, setProfile] = useState(null);
+  const [cartCount, setCartCount] = useState(modules.mercerie ? readMercerieCart().length : 0);
+  const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
-    api("/api/client/orders").then(setOrders).catch(console.error);
+    if (modules.yarn) api("/api/client/orders").then(setOrders).catch((err) => setLoadError(err.message));
+    if (modules.mercerie) api("/api/client/catalog/orders").then(setMercerieOrders).catch((err) => setLoadError(err.message));
     api("/api/client/profile").then(setProfile).catch(() => {});
-  }, []);
+  }, [modules.yarn, modules.mercerie]);
 
   const drafts = orders.filter((order) => order.status === "draft");
   const recentDrafts = drafts.slice(0, 3);
@@ -32,89 +40,160 @@ function ClientDashboard() {
     .slice(0, 5);
   const latestOrders = orders.filter((order) => order.status !== "draft").slice(0, 3);
 
-  const greeting = profile?.company_name || profile?.contact_name || "votre espace production";
+  const mercerieOngoing = mercerieOrders.filter((o) => !["delivered", "cancelled"].includes(o.status));
+  const mercerieDelivered = mercerieOrders.filter((o) => o.status === "delivered");
 
-  const metrics = useMemo(() => [
+  const greeting = profile?.company_name || profile?.contact_name || "votre espace";
+
+  const yarnMetrics = useMemo(() => [
     ["Brouillons", drafts.length],
     ["Demandes envoyées", submitted.length],
     ["En validation", pendingValidation.length],
     ["En production", inProduction.length],
   ], [drafts.length, submitted.length, pendingValidation.length, inProduction.length]);
 
+  const mercerieMetrics = useMemo(() => [
+    ["Panier", cartCount],
+    ["Commandes en cours", mercerieOngoing.length],
+    ["Commandes livrées", mercerieDelivered.length],
+    ["Total commandes", mercerieOrders.length],
+  ], [cartCount, mercerieOngoing.length, mercerieDelivered.length, mercerieOrders.length]);
+
+  const heroSubtitle = modules.yarn && modules.mercerie
+    ? "Suivez vos demandes de fil et vos commandes mercerie en un seul endroit."
+    : modules.yarn
+      ? "Suivez vos demandes, vos productions et vos documents en un seul endroit."
+      : "Parcourez le catalogue mercerie et suivez vos commandes.";
+
   return (
     <PageContainer>
-      
-    <section style={styles.heroPanel}>
+      {loadError && <div style={styles.error}>Chargement partiel : {loadError}</div>}
+      <section style={styles.heroPanel}>
         <img src={atelierMachines} alt="" style={styles.heroImage} />
         <div style={styles.heroOverlay} />
         <div style={styles.heroContent}>
-          <div style={styles.overlineLight}>Portail privé filature</div>
+          <div style={styles.overlineLight}>Portail privé Toulemonde</div>
           <h2 style={styles.heroTitle}>Bonjour {greeting}</h2>
-          <p style={styles.heroText}>Suivez vos demandes, vos productions et vos documents en un seul endroit.</p>
+          <p style={styles.heroText}>{heroSubtitle}</p>
         </div>
         <div style={local.heroActions}>
-          <button style={styles.primaryButton} onClick={() => navigate("/client/orders/new")}>
-            <PlusCircle size={16} /> Nouvelle demande
-          </button>
-          {recentDrafts[0] && (
+          {modules.yarn && (
+            <button style={styles.primaryButton} onClick={() => navigate("/client/orders/new")}>
+              <PlusCircle size={16} /> Nouvelle demande
+            </button>
+          )}
+          {modules.yarn && recentDrafts[0] && (
             <button style={local.heroSecondaryButton} onClick={() => navigate(`/client/orders/new?draftId=${recentDrafts[0].id}`)}>
               Reprendre un brouillon
             </button>
           )}
+          {modules.mercerie && !modules.yarn && (
+            <button style={styles.primaryButton} onClick={() => navigate("/client/mercerie")}>
+              <Package size={16} /> Voir le catalogue
+            </button>
+          )}
+          {modules.mercerie && cartCount > 0 && (
+            <button style={local.heroSecondaryButton} onClick={() => navigate("/client/mercerie/cart")}>
+              <ShoppingCart size={14} /> Panier ({cartCount})
+            </button>
+          )}
         </div>
       </section>
-<PageHeader
+
+      <PageHeader
         kicker="Portail client"
-        title="Mon espace production"
-        subtitle="Pilotez vos demandes de fil, vos productions en cours et vos documents."
+        title="Mon espace"
+        subtitle={modules.yarn && modules.mercerie
+          ? "Pilotez vos demandes de fil, vos commandes mercerie et vos documents."
+          : modules.yarn
+            ? "Pilotez vos demandes de fil, vos productions et vos documents."
+            : "Pilotez vos commandes mercerie et vos documents."}
       />
-      <section style={styles.cardWide}>
-        <h2 style={styles.cardTitle}>À reprendre</h2>
-        {recentDrafts.length ? (
-          <div style={local.draftGrid}>
-            {recentDrafts.map((draft) => (
-              <button key={draft.id} type="button" style={local.draftCard} onClick={() => navigate(`/client/orders/new?draftId=${draft.id}`)}>
-                <span style={styles.badge}>Brouillon</span>
-                <strong>{draft.order_number || `Brouillon ${draft.id}`}</strong>
-                <span style={styles.muted}>
-                  {draft.line_count || 0} ligne(s)
-                  {draft.total_quantity_kg ? ` · ${draft.total_quantity_kg} kg` : ""}
-                  {draft.updated_at ? ` · modifié ${formatDateTime(draft.updated_at)}` : ""}
-                </span>
-                <span style={styles.linkButton}>Reprendre</span>
-              </button>
+
+      {modules.yarn && (
+        <>
+          {isMixte && <h2 style={styles.cardTitle}>Fil industriel</h2>}
+          <section style={styles.cardWide}>
+            <h2 style={styles.cardTitle}>À reprendre</h2>
+            {recentDrafts.length ? (
+              <div style={local.draftGrid}>
+                {recentDrafts.map((draft) => (
+                  <button key={draft.id} type="button" style={local.draftCard} onClick={() => navigate(`/client/orders/new?draftId=${draft.id}`)}>
+                    <span style={styles.badge}>Brouillon</span>
+                    <strong>{draft.order_number || `Brouillon ${draft.id}`}</strong>
+                    <span style={styles.muted}>
+                      {draft.line_count || 0} ligne(s)
+                      {draft.total_quantity_kg ? ` · ${draft.total_quantity_kg} kg` : ""}
+                      {draft.updated_at ? ` · modifié ${formatDateTime(draft.updated_at)}` : ""}
+                    </span>
+                    <span style={styles.linkButton}>Reprendre</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div style={styles.emptyState}>Aucun brouillon en cours.</div>
+            )}
+          </section>
+
+          <section style={{ ...local.metricsGrid, ...(isMobile ? local.metricsGridMobile : {}) }}>
+            {yarnMetrics.map(([title, value]) => (
+              <div key={title} style={local.metricCard}>
+                <div style={styles.metricTitle}>{title}</div>
+                <div style={styles.metricValue}>{value}</div>
+              </div>
             ))}
+          </section>
+
+          <div style={{ ...styles.dashboardGrid, ...(isMobile ? styles.dashboardGridMobile : {}) }}>
+            <section style={styles.cardWide}>
+              <h2 style={styles.cardTitle}>Demandes en cours</h2>
+              <ClientOrdersTable orders={ongoingOrders} columns={["order", "reference", "lines", "quantity", "status", "date"]} empty="Aucune demande en cours." />
+            </section>
+            <section style={styles.cardWide}>
+              <h2 style={styles.cardTitle}>Dernières demandes</h2>
+              <ClientOrdersTable orders={latestOrders} columns={["order", "lines", "quantity", "status"]} empty="Aucune demande récente." />
+            </section>
           </div>
-        ) : (
-          <div style={styles.emptyState}>Aucun brouillon en cours.</div>
-        )}
-      </section>
+        </>
+      )}
 
-      <section style={{ ...local.metricsGrid, ...(isMobile ? local.metricsGridMobile : {}) }}>
-        {metrics.map(([title, value]) => (
-          <div key={title} style={local.metricCard}>
-            <div style={styles.metricTitle}>{title}</div>
-            <div style={styles.metricValue}>{value}</div>
-          </div>
-        ))}
-      </section>
+      {modules.mercerie && (
+        <>
+          {isMixte && <h2 style={{ ...styles.cardTitle, marginTop: 12 }}>Mercerie</h2>}
+          <section style={{ ...local.metricsGrid, ...(isMobile ? local.metricsGridMobile : {}) }}>
+            {mercerieMetrics.map(([title, value]) => (
+              <div key={title} style={local.metricCard}>
+                <div style={styles.metricTitle}>{title}</div>
+                <div style={styles.metricValue}>{value}</div>
+              </div>
+            ))}
+          </section>
 
-      <div style={{ ...styles.dashboardGrid, ...(isMobile ? styles.dashboardGridMobile : {}) }}>
-        <section style={styles.cardWide}>
-          <h2 style={styles.cardTitle}>Demandes en cours</h2>
-          <ClientOrdersTable orders={ongoingOrders} columns={["order", "reference", "lines", "quantity", "status", "date"]} empty="Aucune demande en cours." />
-        </section>
-
-        <section style={styles.cardWide}>
-          <h2 style={styles.cardTitle}>Documents récents</h2>
-          <div style={styles.emptyState}>Vos documents de commande apparaîtront ici.</div>
-        </section>
-
-        <section style={styles.cardWide}>
-          <h2 style={styles.cardTitle}>Dernières demandes</h2>
-          <ClientOrdersTable orders={latestOrders} columns={["order", "lines", "quantity", "status"]} empty="Aucune demande récente." />
-        </section>
-      </div>
+          <section style={styles.cardWide}>
+            <h2 style={styles.cardTitle}>Accès rapide</h2>
+            <div style={local.draftGrid}>
+              <button type="button" style={local.draftCard} onClick={() => navigate("/client/mercerie")}>
+                <Package size={20} color={T.bleu} />
+                <strong>Catalogue</strong>
+                <span style={styles.muted}>Articles standards mercerie.</span>
+                <span style={styles.linkButton}>Parcourir</span>
+              </button>
+              <button type="button" style={local.draftCard} onClick={() => navigate("/client/mercerie/cart")}>
+                <ShoppingCart size={20} color={T.bleu} />
+                <strong>Mon panier</strong>
+                <span style={styles.muted}>{cartCount} article(s) en attente.</span>
+                <span style={styles.linkButton}>{cartCount > 0 ? "Finaliser" : "Vide"}</span>
+              </button>
+              <button type="button" style={local.draftCard} onClick={() => navigate("/client/mercerie/orders")}>
+                <PlusCircle size={20} color={T.bleu} />
+                <strong>Commandes mercerie</strong>
+                <span style={styles.muted}>{mercerieOrders.length} commande(s) au total.</span>
+                <span style={styles.linkButton}>Voir l'historique</span>
+              </button>
+            </div>
+          </section>
+        </>
+      )}
     </PageContainer>
   );
 }

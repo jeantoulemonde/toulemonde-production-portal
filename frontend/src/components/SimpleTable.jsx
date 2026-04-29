@@ -1,4 +1,4 @@
-import { isValidElement } from "react";
+import { Fragment, isValidElement } from "react";
 import { styles } from "../styles";
 import { adminFieldLabel, formatCell } from "../utils/formatters";
 
@@ -11,25 +11,24 @@ function SimpleTable({ columns, rows, actions }) {
         <div key={column} style={styles.tableHead}>{adminFieldLabel(column)}</div>
       ))}
       {actions && <div style={styles.tableHead}>Actions</div>}
-      {rows.map((row, rowIndex) => (
-        <FragmentRow key={row._key || row.id || rowIndex}>
-          {columns.map((column) => {
-            const value = row[column];
-            return (
-              <div key={`${row._key || row.id || rowIndex}-${column}`} style={styles.cell}>
-                {isValidElement(value) ? value : formatCell(value)}
-              </div>
-            );
-          })}
-          {actions && <div key={`${row._key || row.id || rowIndex}-actions`} style={styles.cell}>{actions(row)}</div>}
-        </FragmentRow>
-      ))}
+      {rows.map((row, rowIndex) => {
+        const rowKey = row._key || row.id || rowIndex;
+        return (
+          <Fragment key={rowKey}>
+            {columns.map((column) => {
+              const value = row[column];
+              return (
+                <div key={`${rowKey}-${column}`} style={styles.cell}>
+                  {isValidElement(value) ? value : formatCell(value)}
+                </div>
+              );
+            })}
+            {actions && <div key={`${rowKey}-actions`} style={styles.cell}>{actions(row)}</div>}
+          </Fragment>
+        );
+      })}
     </div>
   );
-}
-
-function FragmentRow({ children }) {
-  return children;
 }
 
 export default SimpleTable;

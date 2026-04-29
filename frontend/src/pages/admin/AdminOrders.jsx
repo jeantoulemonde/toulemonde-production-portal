@@ -4,38 +4,44 @@ import { api } from "../../api/api";
 import { styles } from "../../styles";
 import PageHeader from "../../components/PageHeader";
 import SimpleTable from "../../components/SimpleTable";
+import LoadingState from "../../components/LoadingState";
 
 function AdminOrders({ onPendingCountChange }) {
   const navigate = useNavigate();
-  const [orders, setOrders] = useState([]);
+  const [orders, setOrders] = useState(null);
   const [typeFilter, setTypeFilter] = useState("all");
   const [filter, setFilter] = useState("validation");
   const [approveOrder, setApproveOrder] = useState(null);
   const [catalogDetail, setCatalogDetail] = useState(null);
   const [approveComment, setApproveComment] = useState("");
   const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
 
   async function loadOrders() {
-    const [technicalOrders, catalogOrders] = await Promise.all([
-      api("/api/admin/orders"),
-      api("/api/admin/catalog/orders"),
-    ]);
-    setOrders([
-      ...technicalOrders.map((order) => ({ ...order, order_type: "technical", _key: `technical-${order.id}` })),
-      ...catalogOrders.map((order) => ({
-        ...order,
-        order_type: "catalog",
-        _key: `catalog-${order.id}`,
-        client_reference: order.customer_reference,
-        total_quantity_kg: order.total_quantity,
-        sage_status: "—",
-      })),
-    ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)));
+    try {
+      const [technicalOrders, catalogOrders] = await Promise.all([
+        api("/api/admin/orders"),
+        api("/api/admin/catalog/orders"),
+      ]);
+      setOrders([
+        ...technicalOrders.map((order) => ({ ...order, order_type: "technical", _key: `technical-${order.id}` })),
+        ...catalogOrders.map((order) => ({
+          ...order,
+          order_type: "catalog",
+          _key: `catalog-${order.id}`,
+          client_reference: order.customer_reference,
+          total_quantity_kg: order.total_quantity,
+          sage_status: "—",
+        })),
+      ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)));
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
-  useEffect(() => { loadOrders().catch(console.error); }, []);
+  useEffect(() => { loadOrders(); }, []);
 
-  const filteredOrders = orders.filter((order) => {
+  const filteredOrders = (orders || []).filter((order) => {
     if (typeFilter !== "all" && order.order_type !== typeFilter) return false;
     if (order.order_type === "catalog" && filter !== "all") return filter === "catalog";
     if (filter === "all") return true;
@@ -48,26 +54,39 @@ function AdminOrders({ onPendingCountChange }) {
 
   async function confirmApprove() {
     if (!approveOrder) return;
-    await api(`/api/orders/${approveOrder.id}/approve`, {
-      method: "POST",
-      body: JSON.stringify({ comment: approveComment }),
-    });
-    setMessage("Commande approuvée.");
-    setApproveOrder(null);
-    setApproveComment("");
-    await loadOrders();
-    await onPendingCountChange?.();
+    try {
+      setError("");
+      setMessage("");
+      await api(`/api/orders/${approveOrder.id}/approve`, {
+        method: "POST",
+        body: JSON.stringify({ comment: approveComment }),
+      });
+      setMessage("Commande approuvée.");
+      setApproveOrder(null);
+      setApproveComment("");
+      await loadOrders();
+      await onPendingCountChange?.();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   async function openCatalogOrder(order) {
-    const detail = await api(`/api/admin/catalog/orders/${order.id}`);
-    setCatalogDetail(detail);
+    try {
+      setError("");
+      const detail = await api(`/api/admin/catalog/orders/${order.id}`);
+      setCatalogDetail(detail);
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   return (
     <div style={styles.pageStack}>
       <PageHeader variant="admin" kicker="Administration" title="Commandes" subtitle="Suivi interne des demandes portail et statuts." />
+      {error && <div style={styles.error}>{error}</div>}
       {message && <div style={styles.success}>{message}</div>}
+      {orders === null && <LoadingState message="Chargement des commandes..." />}
       <section style={styles.cardWide}>
         <div style={styles.formActions}>
           <button type="button" style={typeFilter === "all" ? styles.primaryButton : styles.ghostButton} onClick={() => setTypeFilter("all")}>Toutes</button>
@@ -112,8 +131,8 @@ function AdminOrders({ onPendingCountChange }) {
         </section>
       )}
       {approveOrder && (
-        <div style={local.modalOverlay} role="dialog" aria-modal="true">
-          <div style={local.modal}>
+        <div style={styles.modalOverlay} role="dialog" aria-modal="true">
+          <div style={styles.modal}>
             <h2 style={styles.cardTitle}>Valider la commande</h2>
             <p style={styles.muted}>Êtes-vous sûr de vouloir valider cette commande ?</p>
             <label style={styles.field}>
@@ -138,8 +157,6 @@ function AdminOrders({ onPendingCountChange }) {
 
 const local = {
   actions: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" },
-  modalOverlay: { position: "fixed", inset: 0, zIndex: 500, background: "rgba(0,0,0,0.32)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 },
-  modal: { width: "min(560px, 100%)", background: "#fff", borderRadius: 18, padding: 22, display: "grid", gap: 16, boxShadow: "0 28px 80px rgba(0,0,0,0.28)" },
 };
 
 export default AdminOrders;

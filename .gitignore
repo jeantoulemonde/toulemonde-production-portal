@@ -1,3 +1,14 @@
 node_modules/
 dist/
 .DS_Store
+
+# Variables d'environnement (ne JAMAIS commiter — voir backend/.env.example)
+.env
+.env.local
+.env.*.local
+
+# Base SQLite legacy (avant migration Postgres) + dumps locaux
+backend/data/
+
+# Logs locaux
+*.log

@@ -13,19 +13,4 @@ function ProfileSection({ title, description, children }) {
   );
 }
 
-function ProfileInput({ label, value, onChange, full = false }) {
-  return (
-    <label style={{ ...styles.profileField, ...(full ? styles.profileFieldFull : {}) }}>
-      <span style={styles.profileLabel}>{label}</span>
-      <input
-        style={styles.profileInput}
-        value={value || ""}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={label}
-      />
-    </label>
-  );
-}
-
-export { ProfileInput };
 export default ProfileSection;

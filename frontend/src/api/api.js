@@ -39,6 +39,13 @@ export async function api(path, options = {}) {
     throw new Error(data.error || "Session expirée");
   }
 
+  if (response.status === 403 && data?.code === "MODULE_FORBIDDEN") {
+    clearSession(user?.role === "client" ? "client" : "admin");
+    clearSession("legacy");
+    window.location.href = "/client/login?moduleRevoked=1";
+    throw new Error(data.error || "Module non disponible");
+  }
+
   if (!response.ok) {
     throw new Error(data.error || "Erreur API");
   }

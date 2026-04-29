@@ -1,7 +1,7 @@
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const rateLimit = require("express-rate-limit");
-const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
 const fs = require("fs");
 const bcrypt = require("bcryptjs");
@@ -28,31 +28,80 @@ app.use(express.json({ limit: "10mb" }));
 app.use(rateLimit({ windowMs: 60 * 1000, limit: 240 }));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-const dbPath = path.join(__dirname, "data", "toulemonde-client.db");
-const db = new sqlite3.Database(dbPath, (err) => {
-  if (err) console.error("Erreur connexion SQLite :", err.message);
-  else console.log("Connecté à SQLite :", dbPath);
+const portalPool = new Pool({
+  host: process.env.POSTGRES_HOST || "localhost",
+  port: Number(process.env.POSTGRES_PORT || 5432),
+  database: process.env.POSTGRES_DB || "toulemonde_portal",
+  user: process.env.POSTGRES_USER,
+  password: process.env.POSTGRES_PASSWORD,
+  ssl: process.env.POSTGRES_SSL === "true" ? { rejectUnauthorized: false } : false,
 });
 
-function run(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function onRun(err) {
-      if (err) reject(err);
-      else resolve({ id: this.lastID, changes: this.changes });
-    });
-  });
+portalPool.on("error", (err) => {
+  console.error("[POSTGRES] erreur idle client :", err.message);
+});
+
+// Traduit les ? en $1, $2, ... en respectant les chaînes quotées.
+function translatePlaceholders(sql) {
+  let result = "";
+  let paramIdx = 0;
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < sql.length; i += 1) {
+    const c = sql[i];
+    if (c === "'" && !inDouble) inSingle = !inSingle;
+    else if (c === '"' && !inSingle) inDouble = !inDouble;
+    if (c === "?" && !inSingle && !inDouble) {
+      paramIdx += 1;
+      result += "$" + paramIdx;
+    } else {
+      result += c;
+    }
+  }
+  return result;
 }
 
-function get(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)));
-  });
+// Adapte les particularités SQLite au dialecte Postgres.
+//   * INSERT OR IGNORE -> INSERT ... ON CONFLICT DO NOTHING
+//   * ?               -> $1, $2, ...
+function adaptSql(sql) {
+  let s = sql.replace(/INSERT\s+OR\s+IGNORE\s+INTO/gi, "INSERT INTO");
+  const wasOrIgnore = s !== sql;
+  s = translatePlaceholders(s);
+  if (wasOrIgnore && !/ON\s+CONFLICT/i.test(s)) {
+    s = s.replace(/;\s*$/, "");
+    s += " ON CONFLICT DO NOTHING";
+  }
+  return s;
 }
 
-function all(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
-  });
+function shouldAppendReturningId(sql) {
+  return /^\s*INSERT\s+INTO\s+/i.test(sql) && !/\bRETURNING\b/i.test(sql);
+}
+
+// Wrappers compatibles avec l'ancienne API (run/get/all) mais branchés sur Postgres.
+// run() simule this.lastID via RETURNING id ajouté automatiquement aux INSERTs.
+async function run(sql, params = []) {
+  let translated = adaptSql(sql);
+  if (shouldAppendReturningId(translated)) {
+    translated = translated.replace(/;\s*$/, "") + " RETURNING id";
+  }
+  const result = await portalPool.query(translated, params);
+  const firstRow = result.rows && result.rows[0];
+  return {
+    id: firstRow && firstRow.id !== undefined ? firstRow.id : null,
+    changes: result.rowCount || 0,
+  };
+}
+
+async function get(sql, params = []) {
+  const result = await portalPool.query(adaptSql(sql), params);
+  return result.rows[0];
+}
+
+async function all(sql, params = []) {
+  const result = await portalPool.query(adaptSql(sql), params);
+  return result.rows;
 }
 
 app.get("/api/health/db", async (req, res) => {
@@ -80,13 +129,6 @@ app.get("/api/health/sage", async (req, res) => {
     });
   }
 });
-
-async function addColumnIfMissing(tableName, columnName, definition) {
-  const columns = await all(`PRAGMA table_info(${tableName})`);
-  if (!columns.some((column) => column.name === columnName)) {
-    await run(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
-  }
-}
 
 async function auditLog({ userId = null, role = null, action, entityType = null, entityId = null, metadata = null, ip = null }) {
   await run(
@@ -154,6 +196,29 @@ function requireAdmin(req, res, next) {
 
 function requireClient(req, res, next) {
   return requireRoles("client")(req, res, next);
+}
+
+// Vérifie qu'un client a accès au module demandé (yarn / mercerie).
+// Les utilisateurs non-client (admin etc.) sont laissés passer.
+function requireClientModule(module) {
+  return async (req, res, next) => {
+    if (!req.user || req.user.role !== "client") return next();
+    try {
+      const client = await getUserClient(req.user);
+      if (!client) return res.status(404).json({ error: "Client introuvable" });
+      const flag = module === "yarn" ? client.access_yarn : client.access_mercerie;
+      if (!flag) {
+        return res.status(403).json({
+          error: "Module non disponible pour votre compte.",
+          code: "MODULE_FORBIDDEN",
+          module,
+        });
+      }
+      next();
+    } catch (error) {
+      res.status(500).json({ error: "Erreur vérification module" });
+    }
+  };
 }
 
 function hashToken(token) {
@@ -875,21 +940,38 @@ async function scheduleSageOrderAction(order, reason = "Commande validée") {
   return { actionId, skipped: false };
 }
 
+// Lot C : nombre max de tentatives avant qu'une action passe en dead-letter.
+const SAGE_ACTION_MAX_RETRIES = 5;
+
 async function processPendingSageActions() {
+  // Lot C : lock atomique multi-process avec FOR UPDATE SKIP LOCKED.
+  // Sélection + UPDATE en une seule requête transactionnelle pour empêcher
+  // qu'un autre process (autre instance, agent, cron) ne traite la même action.
+  // Filtre les actions en ERROR seulement si retry_count < MAX (pas de boucle infinie).
   const actions = await all(
     `
-      SELECT * FROM erp_pending_actions
-      WHERE action_type = 'CREATE_SAGE_ORDER'
-        AND status IN ('pending', 'PENDING', 'failed', 'ERROR')
-      ORDER BY id ASC
-      LIMIT 20
-    `
+      UPDATE erp_pending_actions
+      SET status = 'processing', locked_at = CURRENT_TIMESTAMP
+      WHERE id IN (
+        SELECT id FROM erp_pending_actions
+        WHERE action_type = 'CREATE_SAGE_ORDER'
+          AND (
+            status IN ('pending', 'PENDING')
+            OR (status IN ('failed', 'ERROR') AND retry_count < ?)
+          )
+        ORDER BY id ASC
+        FOR UPDATE SKIP LOCKED
+        LIMIT 20
+      )
+      RETURNING *
+    `,
+    [SAGE_ACTION_MAX_RETRIES]
   );
   const results = [];
 
   for (const action of actions) {
     const payload = JSON.parse(action.payload_json || "{}");
-    await run(`UPDATE erp_pending_actions SET status = 'processing', locked_at = CURRENT_TIMESTAMP WHERE id = ?`, [action.id]);
+    // Le lock est déjà acquis par le UPDATE...RETURNING ci-dessus, plus besoin de re-marquer.
 
     try {
       const result = await withSagePool((pool, config) => createSageOrderForPortalOrder(pool, payload, config));
@@ -1047,12 +1129,17 @@ async function syncSageInboundStatuses() {
   });
 
   const updated = results.filter((item) => item.updated).length;
-  await insertSyncLog("SAGE_PORTAL", "sage_to_website", "success", `${updated} statut(s) mis à jour depuis SageSimu`, null, null);
+  // Lot A : ne logger en succès que si quelque chose a effectivement bougé.
+  // Un cycle sans mise à jour est silencieux pour ne pas spammer sync_logs.
+  if (updated > 0) {
+    await insertSyncLog("SAGE_PORTAL", "sage_to_website", "success", `${updated} statut(s) mis à jour depuis SageSimu`, null, null);
+  }
   return { checked: orders.length, updated, results };
 }
 
 const sageSyncService = createSageSyncService({
   run,
+  get,
   insertSyncLog,
   syncSageInboundStatuses,
   processPendingSageActions,
@@ -1065,479 +1152,20 @@ const sageScheduler = createSageScheduler({
 });
 
 async function initDb() {
-  await run(`
-    CREATE TABLE IF NOT EXISTS portal_clients (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      customer_code TEXT UNIQUE NOT NULL,
-      company_name TEXT NOT NULL,
-      contact_email TEXT,
-      is_active INTEGER DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
+  // Schéma : tout est défini dans backend/sql/init_postgres.sql (rejouable, IF NOT EXISTS partout).
+  const sqlPath = path.join(__dirname, "sql", "init_postgres.sql");
+  const initSql = fs.readFileSync(sqlPath, "utf8");
+  await portalPool.query(initSql);
 
-  await run(`
-    CREATE TABLE IF NOT EXISTS portal_users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      email TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      full_name TEXT,
-      role TEXT NOT NULL,
-      client_id INTEGER,
-      client_code TEXT,
-      is_active INTEGER DEFAULT 1,
-      status TEXT DEFAULT 'active',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
+  // Migrations de healing héritées de l'ancienne base SQLite. Idempotentes, gardées par sécurité.
+  await portalPool.query(
+    `UPDATE portal_orders SET sage_status = 'not_sent' WHERE sage_status IS NULL OR sage_status = ''`
+  );
+  await portalPool.query(
+    `UPDATE portal_orders SET status = 'pending_approval' WHERE status = 'submitted'`
+  );
 
-  await run(`
-    CREATE TABLE IF NOT EXISTS portal_orders (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      order_number TEXT UNIQUE,
-      client_id INTEGER,
-      customer_code TEXT NOT NULL,
-      client_reference TEXT,
-      material TEXT,
-      yarn_count TEXT,
-      twist TEXT,
-      color TEXT,
-      dyeing_required INTEGER DEFAULT 0,
-      conditioning TEXT,
-      quantity_kg REAL,
-      requested_date TEXT,
-      urgency TEXT,
-      destination_usage TEXT,
-      tolerance TEXT,
-      comment TEXT,
-      status TEXT NOT NULL DEFAULT 'draft',
-      created_by INTEGER,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS portal_order_specs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      order_id INTEGER NOT NULL,
-      specs_json TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(order_id) REFERENCES portal_orders(id)
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS portal_order_lines (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      portal_order_id INTEGER NOT NULL,
-      line_number INTEGER NOT NULL,
-      application_type TEXT,
-      material_family TEXT,
-      material_quality TEXT,
-      count_system TEXT,
-      yarn_count_nm TEXT,
-      dtex TEXT,
-      custom_count TEXT,
-      ply_number TEXT,
-      twist_type TEXT,
-      twist_direction TEXT,
-      finish TEXT,
-      color_mode TEXT,
-      color_name TEXT,
-      color_reference TEXT,
-      dyeing_required INTEGER DEFAULT 0,
-      dyeing_comment TEXT,
-      packaging TEXT,
-      quantity_kg REAL,
-      meterage_per_unit TEXT,
-      tolerance_percent REAL,
-      partial_delivery_allowed INTEGER DEFAULT 0,
-      production_comment TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(portal_order_id) REFERENCES portal_orders(id)
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS portal_documents (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      order_id INTEGER NOT NULL,
-      filename TEXT NOT NULL,
-      document_type TEXT,
-      storage_url TEXT,
-      uploaded_by INTEGER,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(order_id) REFERENCES portal_orders(id)
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS portal_messages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      order_id INTEGER NOT NULL,
-      author_id INTEGER,
-      body TEXT NOT NULL,
-      visibility TEXT DEFAULT 'client_admin',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(order_id) REFERENCES portal_orders(id)
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS erp_pending_actions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      action_type TEXT NOT NULL,
-      payload_json TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'PENDING',
-      result_json TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      processed_at DATETIME,
-      retry_count INTEGER DEFAULT 0,
-      locked_at DATETIME
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS agent_status_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      agent_id TEXT,
-      status TEXT NOT NULL,
-      sage_connectivity TEXT,
-      leon_connectivity TEXT,
-      message TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS sync_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      system TEXT NOT NULL,
-      direction TEXT NOT NULL,
-      status TEXT NOT NULL,
-      message TEXT,
-      entity_type TEXT,
-      entity_id TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS connector_settings (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      connector_key TEXT UNIQUE NOT NULL,
-      config_json TEXT NOT NULL DEFAULT '{}',
-      enabled INTEGER DEFAULT 0,
-      last_check_at DATETIME,
-      last_inbound_sync_at DATETIME,
-      last_outbound_sync_at DATETIME,
-      last_error TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS portal_order_status_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      portal_order_id INTEGER NOT NULL,
-      old_status TEXT,
-      new_status TEXT,
-      source TEXT,
-      message TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(portal_order_id) REFERENCES portal_orders(id)
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS audit_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER,
-      role TEXT,
-      action TEXT NOT NULL,
-      entity_type TEXT,
-      entity_id TEXT,
-      metadata_json TEXT,
-      ip TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS catalog_articles (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      code TEXT UNIQUE NOT NULL,
-      label TEXT NOT NULL,
-      family TEXT,
-      is_active INTEGER DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS catalog_materials (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      code TEXT UNIQUE NOT NULL,
-      label TEXT NOT NULL,
-      is_active INTEGER DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS catalog_yarn_counts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      label TEXT UNIQUE NOT NULL,
-      is_active INTEGER DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS catalog_colors (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      label TEXT UNIQUE NOT NULL,
-      is_active INTEGER DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS catalog_conditionings (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      label TEXT UNIQUE NOT NULL,
-      is_active INTEGER DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS catalog_categories (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      slug TEXT UNIQUE NOT NULL,
-      description TEXT,
-      display_order INTEGER DEFAULT 0,
-      is_active INTEGER DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS catalog_products (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      category_id INTEGER,
-      sku TEXT UNIQUE NOT NULL,
-      name TEXT NOT NULL,
-      short_description TEXT,
-      description TEXT,
-      default_image_url TEXT,
-      unit_label TEXT DEFAULT 'pièce',
-      price REAL,
-      currency TEXT DEFAULT 'EUR',
-      stock_quantity REAL,
-      is_active INTEGER DEFAULT 1,
-      is_featured INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(category_id) REFERENCES catalog_categories(id)
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS catalog_product_images (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      product_id INTEGER NOT NULL,
-      image_url TEXT,
-      storage_path TEXT,
-      alt_text TEXT,
-      display_order INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(product_id) REFERENCES catalog_products(id)
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS catalog_product_color_variants (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      product_id INTEGER NOT NULL,
-      color_name TEXT NOT NULL,
-      color_hex TEXT,
-      image_url TEXT,
-      storage_path TEXT,
-      display_order INTEGER DEFAULT 0,
-      is_active INTEGER DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(product_id) REFERENCES catalog_products(id)
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS product_variants (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      product_id INTEGER NOT NULL,
-      reference TEXT UNIQUE NOT NULL,
-      color_name TEXT NOT NULL,
-      color_hex TEXT,
-      image_url TEXT,
-      availability_status TEXT DEFAULT 'available',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(product_id) REFERENCES catalog_products(id)
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS catalog_orders (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      client_id INTEGER NOT NULL,
-      order_number TEXT UNIQUE NOT NULL,
-      customer_reference TEXT,
-      status TEXT NOT NULL DEFAULT 'submitted',
-      comment TEXT,
-      internal_comment TEXT,
-      requested_delivery_date TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(client_id) REFERENCES portal_clients(id)
-    )
-  `);
-
-  await run(`
-    CREATE TABLE IF NOT EXISTS catalog_order_lines (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      catalog_order_id INTEGER NOT NULL,
-      product_id INTEGER,
-      sku TEXT NOT NULL,
-      product_name TEXT NOT NULL,
-      quantity REAL NOT NULL,
-      unit_label TEXT,
-      unit_price REAL,
-      line_total REAL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(catalog_order_id) REFERENCES catalog_orders(id),
-      FOREIGN KEY(product_id) REFERENCES catalog_products(id)
-    )
-  `);
-
-  await run(`CREATE INDEX IF NOT EXISTS idx_portal_orders_customer ON portal_orders(customer_code)`);
-  await run(`CREATE INDEX IF NOT EXISTS idx_portal_orders_status ON portal_orders(status)`);
-  await run(`CREATE INDEX IF NOT EXISTS idx_portal_order_lines_order ON portal_order_lines(portal_order_id)`);
-  await run(`CREATE INDEX IF NOT EXISTS idx_erp_pending_status ON erp_pending_actions(status)`);
-  await run(`CREATE INDEX IF NOT EXISTS idx_catalog_products_category ON catalog_products(category_id)`);
-  await run(`CREATE INDEX IF NOT EXISTS idx_catalog_products_active ON catalog_products(is_active)`);
-  await run(`CREATE INDEX IF NOT EXISTS idx_catalog_product_colors_product ON catalog_product_color_variants(product_id)`);
-  await run(`CREATE INDEX IF NOT EXISTS idx_product_variants_product ON product_variants(product_id)`);
-  await run(`CREATE INDEX IF NOT EXISTS idx_catalog_orders_client ON catalog_orders(client_id)`);
-  await run(`CREATE INDEX IF NOT EXISTS idx_catalog_order_lines_order ON catalog_order_lines(catalog_order_id)`);
-
-  await addColumnIfMissing("erp_pending_actions", "locked_at", "DATETIME");
-  await addColumnIfMissing("erp_pending_actions", "entity_type", "TEXT");
-  await addColumnIfMissing("erp_pending_actions", "entity_id", "TEXT");
-  await addColumnIfMissing("erp_pending_actions", "error_message", "TEXT");
-  await addColumnIfMissing("portal_clients", "vat_number", "TEXT");
-  await addColumnIfMissing("portal_clients", "email", "TEXT");
-  await addColumnIfMissing("portal_clients", "phone", "TEXT");
-  await addColumnIfMissing("portal_clients", "billing_address", "TEXT");
-  await addColumnIfMissing("portal_clients", "billing_postal_code", "TEXT");
-  await addColumnIfMissing("portal_clients", "billing_city", "TEXT");
-  await addColumnIfMissing("portal_clients", "billing_country", "TEXT");
-  await addColumnIfMissing("portal_clients", "shipping_address", "TEXT");
-  await addColumnIfMissing("portal_clients", "shipping_postal_code", "TEXT");
-  await addColumnIfMissing("portal_clients", "shipping_city", "TEXT");
-  await addColumnIfMissing("portal_clients", "shipping_country", "TEXT");
-  await addColumnIfMissing("portal_clients", "contact_name", "TEXT");
-  await addColumnIfMissing("portal_clients", "contact_phone", "TEXT");
-  await addColumnIfMissing("portal_clients", "sage_customer_code", "TEXT");
-  await addColumnIfMissing("portal_clients", "status", "TEXT DEFAULT 'active'");
-  await addColumnIfMissing("portal_clients", "last_sync_status", "TEXT");
-  await addColumnIfMissing("portal_clients", "last_sync_at", "DATETIME");
-  await addColumnIfMissing("portal_orders", "client_id", "INTEGER");
-  await addColumnIfMissing("portal_orders", "sage_order_number", "TEXT");
-  await addColumnIfMissing("portal_orders", "approval_comment", "TEXT");
-  await addColumnIfMissing("portal_orders", "approved_by", "INTEGER");
-  await addColumnIfMissing("portal_orders", "approved_at", "DATETIME");
-  await addColumnIfMissing("portal_orders", "sage_status", "TEXT DEFAULT 'not_sent'");
-  await addColumnIfMissing("portal_orders", "sage_error_message", "TEXT");
-  await addColumnIfMissing("portal_orders", "sage_sent_at", "DATETIME");
-  await addColumnIfMissing("portal_orders", "requested_delivery_date", "TEXT");
-  await addColumnIfMissing("portal_orders", "sync_status", "TEXT");
-  await addColumnIfMissing("portal_orders", "internal_comment", "TEXT");
-  await addColumnIfMissing("portal_orders", "ply_number", "TEXT");
-  await addColumnIfMissing("portal_orders", "color_reference", "TEXT");
-  await addColumnIfMissing("portal_orders", "tolerance_percent", "REAL");
-  await addColumnIfMissing("portal_orders", "partial_delivery_allowed", "INTEGER DEFAULT 0");
-  await addColumnIfMissing("portal_orders", "application_type", "TEXT");
-  await addColumnIfMissing("portal_orders", "material_family", "TEXT");
-  await addColumnIfMissing("portal_orders", "material_quality", "TEXT");
-  await addColumnIfMissing("portal_orders", "count_system", "TEXT");
-  await addColumnIfMissing("portal_orders", "dtex", "TEXT");
-  await addColumnIfMissing("portal_orders", "custom_count", "TEXT");
-  await addColumnIfMissing("portal_orders", "twist_type", "TEXT");
-  await addColumnIfMissing("portal_orders", "twist_direction", "TEXT");
-  await addColumnIfMissing("portal_orders", "finish", "TEXT");
-  await addColumnIfMissing("portal_orders", "color_mode", "TEXT");
-  await addColumnIfMissing("portal_orders", "dyeing_comment", "TEXT");
-  await addColumnIfMissing("portal_orders", "packaging", "TEXT");
-  await addColumnIfMissing("portal_orders", "meterage_per_unit", "TEXT");
-  await addColumnIfMissing("portal_orders", "production_comment", "TEXT");
-  await addColumnIfMissing("portal_orders", "delivery_address_choice", "TEXT");
-  await addColumnIfMissing("portal_orders", "delivery_address", "TEXT");
-  await addColumnIfMissing("portal_orders", "delivery_comment", "TEXT");
-  await addColumnIfMissing("portal_orders", "technical_file_name", "TEXT");
-  await addColumnIfMissing("catalog_products", "default_image_url", "TEXT");
-  await addColumnIfMissing("catalog_order_lines", "color_variant_id", "INTEGER");
-  await addColumnIfMissing("catalog_order_lines", "variant_reference", "TEXT");
-  await addColumnIfMissing("catalog_order_lines", "color_name", "TEXT");
-  await addColumnIfMissing("catalog_order_lines", "color_hex", "TEXT");
-  await run(`
-    INSERT OR IGNORE INTO product_variants (
-      product_id,
-      reference,
-      color_name,
-      color_hex,
-      image_url,
-      availability_status,
-      created_at,
-      updated_at
-    )
-    SELECT
-      product_id,
-      'LEGACY-' || product_id || '-' || id,
-      color_name,
-      color_hex,
-      COALESCE(image_url, storage_path),
-      CASE WHEN is_active = 1 THEN 'available' ELSE 'unavailable' END,
-      COALESCE(created_at, CURRENT_TIMESTAMP),
-      COALESCE(updated_at, CURRENT_TIMESTAMP)
-    FROM catalog_product_color_variants
-  `);
-  await run(`UPDATE portal_orders SET sage_status = 'not_sent' WHERE sage_status IS NULL OR sage_status = ''`);
-  await run(`UPDATE portal_orders SET status = 'pending_approval' WHERE status = 'submitted'`);
-  await addColumnIfMissing("portal_orders", "invoice_number", "TEXT");
-  await addColumnIfMissing("portal_orders", "invoice_date", "TEXT");
-  await addColumnIfMissing("portal_orders", "invoice_total_ht", "REAL");
-  await addColumnIfMissing("portal_orders", "invoice_total_ttc", "REAL");
-  await addColumnIfMissing("portal_users", "status", "TEXT DEFAULT 'active'");
-  await addColumnIfMissing("portal_users", "client_id", "INTEGER");
-  await addColumnIfMissing("portal_users", "last_login_at", "DATETIME");
-  await addColumnIfMissing("portal_users", "reset_token_hash", "TEXT");
-  await addColumnIfMissing("portal_users", "reset_token_expires_at", "DATETIME");
-  await addColumnIfMissing("portal_users", "last_password_reset_at", "DATETIME");
-  await addColumnIfMissing("sync_logs", "entity_type", "TEXT");
-  await addColumnIfMissing("sync_logs", "entity_id", "TEXT");
-  await addColumnIfMissing("portal_documents", "source", "TEXT");
-  await addColumnIfMissing("portal_documents", "sage_reference", "TEXT");
-
+  // Seed POC : client de démo + comptes admin/client + catégories mercerie + produits exemples.
   await run(
     `INSERT OR IGNORE INTO portal_clients (customer_code, company_name, contact_email) VALUES (?, ?, ?)`,
     ["CLI-DEMO", "Maison Dupont", "client@demo.local"]
@@ -1683,6 +1311,11 @@ async function loginWithRoles(req, res, allowedRoles, redirectTo) {
       return res.status(403).json({ error: "Ce compte n'est pas autorisé sur cet espace." });
     }
 
+    const client = user.role === "client" ? await getUserClient({
+      clientId: user.client_id,
+      clientCode: user.client_code,
+    }) : null;
+
     const publicUser = {
       id: user.id,
       email: user.email,
@@ -1690,6 +1323,12 @@ async function loginWithRoles(req, res, allowedRoles, redirectTo) {
       role: user.role,
       clientId: user.client_id,
       clientCode: user.client_code,
+      modules: user.role === "client"
+        ? {
+          yarn: Boolean(client?.access_yarn),
+          mercerie: Boolean(client?.access_mercerie),
+        }
+        : { yarn: true, mercerie: true },
     };
 
     await auditLog({ userId: user.id, role: user.role, action: "AUTH_LOGIN", ip: req.ip });
@@ -1722,7 +1361,21 @@ app.post("/api/auth/login", async (req, res) => {
 app.get("/api/auth/me", authRequired, async (req, res) => {
   const user = await get(`SELECT id, email, full_name, role, client_id, client_code, is_active, status FROM portal_users WHERE id = ?`, [req.user.sub]);
   if (!user || !user.is_active || user.status === "disabled") return res.status(401).json({ error: "Session invalide" });
-  res.json({ id: user.id, email: user.email, fullName: user.full_name, role: user.role, clientId: user.client_id, clientCode: user.client_code });
+  const client = user.role === "client" ? await getUserClient({
+    clientId: user.client_id,
+    clientCode: user.client_code,
+  }) : null;
+  res.json({
+    id: user.id,
+    email: user.email,
+    fullName: user.full_name,
+    role: user.role,
+    clientId: user.client_id,
+    clientCode: user.client_code,
+    modules: user.role === "client"
+      ? { yarn: Boolean(client?.access_yarn), mercerie: Boolean(client?.access_mercerie) }
+      : { yarn: true, mercerie: true },
+  });
 });
 
 async function forgotPasswordForRoles(req, res, allowedRoles, resetPrefix) {
@@ -1860,7 +1513,7 @@ async function listClientOrders(req, res) {
   }
 }
 
-app.get("/api/client/orders", authRequired, requireClient, listClientOrders);
+app.get("/api/client/orders", authRequired, requireClient, requireClientModule("yarn"), listClientOrders);
 app.get("/api/orders", authRequired, listClientOrders);
 
 async function createPortalOrder(req, res) {
@@ -2006,7 +1659,7 @@ async function createPortalOrder(req, res) {
 
 app.post("/api/orders", authRequired, createPortalOrder);
 app.post("/api/portal/orders", authRequired, createPortalOrder);
-app.post("/api/client/orders", authRequired, requireClient, createPortalOrder);
+app.post("/api/client/orders", authRequired, requireClient, requireClientModule("yarn"), createPortalOrder);
 
 async function getClientProfile(req, res) {
   try {
@@ -2148,7 +1801,7 @@ async function getClientOrderDetail(req, res) {
   }
 }
 
-app.get("/api/client/orders/:id", authRequired, requireClient, getClientOrderDetail);
+app.get("/api/client/orders/:id", authRequired, requireClient, requireClientModule("yarn"), getClientOrderDetail);
 app.get("/api/orders/pending-count", authRequired, requireAdmin, getPendingOrderCount);
 app.get("/api/orders/:id", authRequired, getClientOrderDetail);
 
@@ -2166,7 +1819,7 @@ async function getOwnedClientOrder(req, res) {
   return { order, client };
 }
 
-app.put("/api/client/orders/:id", authRequired, requireClient, async (req, res) => {
+app.put("/api/client/orders/:id", authRequired, requireClient, requireClientModule("yarn"), async (req, res) => {
   try {
     const owned = await getOwnedClientOrder(req, res);
     if (!owned) return;
@@ -2203,7 +1856,7 @@ app.put("/api/client/orders/:id", authRequired, requireClient, async (req, res) 
   }
 });
 
-app.post("/api/client/orders/:id/submit", authRequired, requireClient, async (req, res) => {
+app.post("/api/client/orders/:id/submit", authRequired, requireClient, requireClientModule("yarn"), async (req, res) => {
   try {
     const owned = await getOwnedClientOrder(req, res);
     if (!owned) return;
@@ -2237,7 +1890,7 @@ app.post("/api/client/orders/:id/submit", authRequired, requireClient, async (re
   }
 });
 
-app.delete("/api/client/orders/:id", authRequired, requireClient, async (req, res) => {
+app.delete("/api/client/orders/:id", authRequired, requireClient, requireClientModule("yarn"), async (req, res) => {
   try {
     const owned = await getOwnedClientOrder(req, res);
     if (!owned) return;
@@ -2505,7 +2158,7 @@ async function listCatalogProducts({ activeOnly = false, categoryId = null, sear
     params.push(categoryId);
   }
   if (search) {
-    where.push("(p.name LIKE ? OR p.sku LIKE ? OR p.short_description LIKE ?)");
+    where.push("(p.name ILIKE ? OR p.sku ILIKE ? OR p.short_description ILIKE ?)");
     params.push(`%${search}%`, `%${search}%`, `%${search}%`);
   }
 
@@ -2521,9 +2174,10 @@ async function listCatalogProducts({ activeOnly = false, categoryId = null, sear
       FROM catalog_products p
       LEFT JOIN catalog_categories c ON c.id = p.category_id
       LEFT JOIN (
-        SELECT product_id, image_url, storage_path, alt_text, MIN(display_order) AS display_order
+        SELECT DISTINCT ON (product_id)
+          product_id, image_url, storage_path, alt_text, display_order
         FROM catalog_product_images
-        GROUP BY product_id
+        ORDER BY product_id, display_order ASC, id ASC
       ) img ON img.product_id = p.id
       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
       ORDER BY p.is_featured DESC, c.display_order ASC, p.name ASC
@@ -2588,7 +2242,7 @@ async function getCatalogOrderDetail(orderId, clientId = null) {
   return { order, lines };
 }
 
-app.get("/api/client/catalog/categories", authRequired, requireClient, async (req, res) => {
+app.get("/api/client/catalog/categories", authRequired, requireClient, requireClientModule("mercerie"), async (req, res) => {
   try {
     const categories = await all(
       `
@@ -2605,7 +2259,7 @@ app.get("/api/client/catalog/categories", authRequired, requireClient, async (re
   }
 });
 
-app.get("/api/client/catalog/products", authRequired, requireClient, async (req, res) => {
+app.get("/api/client/catalog/products", authRequired, requireClient, requireClientModule("mercerie"), async (req, res) => {
   try {
     const products = await listCatalogProducts({
       activeOnly: true,
@@ -2619,7 +2273,7 @@ app.get("/api/client/catalog/products", authRequired, requireClient, async (req,
   }
 });
 
-app.get("/api/client/catalog/products/:id", authRequired, requireClient, async (req, res) => {
+app.get("/api/client/catalog/products/:id", authRequired, requireClient, requireClientModule("mercerie"), async (req, res) => {
   try {
     const product = await getCatalogProductDetail(req.params.id, { activeOnly: true });
     if (!product) return res.status(404).json({ error: "Produit introuvable" });
@@ -2629,7 +2283,7 @@ app.get("/api/client/catalog/products/:id", authRequired, requireClient, async (
   }
 });
 
-app.post("/api/client/catalog/orders", authRequired, requireClient, async (req, res) => {
+app.post("/api/client/catalog/orders", authRequired, requireClient, requireClientModule("mercerie"), async (req, res) => {
   try {
     const client = await getUserClient(req.user);
     if (!client) return res.status(404).json({ error: "Client introuvable" });
@@ -2748,7 +2402,7 @@ app.post("/api/client/catalog/orders", authRequired, requireClient, async (req, 
   }
 });
 
-app.get("/api/client/catalog/orders", authRequired, requireClient, async (req, res) => {
+app.get("/api/client/catalog/orders", authRequired, requireClient, requireClientModule("mercerie"), async (req, res) => {
   try {
     const client = await getUserClient(req.user);
     if (!client) return res.status(404).json({ error: "Client introuvable" });
@@ -2773,7 +2427,7 @@ app.get("/api/client/catalog/orders", authRequired, requireClient, async (req, r
   }
 });
 
-app.get("/api/client/catalog/orders/:id", authRequired, requireClient, async (req, res) => {
+app.get("/api/client/catalog/orders/:id", authRequired, requireClient, requireClientModule("mercerie"), async (req, res) => {
   try {
     const client = await getUserClient(req.user);
     if (!client) return res.status(404).json({ error: "Client introuvable" });
@@ -3183,7 +2837,7 @@ app.get("/api/admin/catalog/orders", authRequired, requireAdmin, async (req, res
       FROM catalog_orders o
       LEFT JOIN portal_clients c ON c.id = o.client_id
       LEFT JOIN catalog_order_lines l ON l.catalog_order_id = o.id
-      GROUP BY o.id
+      GROUP BY o.id, c.company_name
       ORDER BY o.id DESC
     `
   );
@@ -3238,8 +2892,10 @@ async function getPendingOrderCount(req, res) {
 app.get("/api/admin/orders/pending-count", authRequired, requireAdmin, getPendingOrderCount);
 
 app.get("/api/admin/clients", authRequired, requireAdmin, async (req, res) => {
+  // Pour chaque client, on prend UN user lié (le plus récent par dernière connexion).
+  // DISTINCT ON est PG-spécifique mais c'est exactement le besoin ici.
   const clients = await all(`
-    SELECT
+    SELECT DISTINCT ON (portal_clients.id)
       portal_clients.*,
       portal_users.id AS user_id,
       portal_users.full_name AS user_name,
@@ -3248,8 +2904,7 @@ app.get("/api/admin/clients", authRequired, requireAdmin, async (req, res) => {
       portal_users.last_login_at AS last_login_at
     FROM portal_clients
     LEFT JOIN portal_users ON portal_users.client_id = portal_clients.id
-    GROUP BY portal_clients.id
-    ORDER BY portal_clients.id DESC
+    ORDER BY portal_clients.id DESC, portal_users.last_login_at DESC NULLS LAST, portal_users.id ASC
   `);
   res.json(clients);
 });
@@ -3261,15 +2916,23 @@ app.post("/api/admin/clients", authRequired, requireAdmin, async (req, res) => {
     const userPayload = payload.user || {};
     if (!body.company_name) return res.status(400).json({ error: "company_name requis" });
     const customerCode = body.customer_code || body.sage_customer_code || `CLI-${Date.now().toString().slice(-6)}`;
+    // Modules : par défaut mixte (1, 1). Refuser tout désactiver.
+    const accessYarn = body.access_yarn === false ? 0 : 1;
+    const accessMercerie = body.access_mercerie === false ? 0 : 1;
+    if (!accessYarn && !accessMercerie) {
+      return res.status(400).json({ error: "Au moins un module doit être actif." });
+    }
     const clientResult = await run(
       `
         INSERT INTO portal_clients (
           customer_code, company_name, vat_number, email, contact_email, phone,
           billing_address, billing_postal_code, billing_city, billing_country,
           shipping_address, shipping_postal_code, shipping_city, shipping_country,
-          contact_name, contact_phone, sage_customer_code, status, is_active, created_at, updated_at
+          contact_name, contact_phone, sage_customer_code,
+          access_yarn, access_mercerie,
+          status, is_active, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `,
       [
         customerCode,
@@ -3289,6 +2952,8 @@ app.post("/api/admin/clients", authRequired, requireAdmin, async (req, res) => {
         body.contact_name || null,
         body.contact_phone || null,
         body.sage_customer_code || null,
+        accessYarn,
+        accessMercerie,
       ]
     );
 
@@ -3333,7 +2998,7 @@ app.post("/api/admin/clients", authRequired, requireAdmin, async (req, res) => {
 app.get("/api/admin/clients/:id", authRequired, requireAdmin, async (req, res) => {
   const client = await get(
     `
-      SELECT
+      SELECT DISTINCT ON (portal_clients.id)
         portal_clients.*,
         portal_users.id AS user_id,
         portal_users.full_name AS user_name,
@@ -3343,7 +3008,7 @@ app.get("/api/admin/clients/:id", authRequired, requireAdmin, async (req, res) =
       FROM portal_clients
       LEFT JOIN portal_users ON portal_users.client_id = portal_clients.id
       WHERE portal_clients.id = ?
-      GROUP BY portal_clients.id
+      ORDER BY portal_clients.id, portal_users.last_login_at DESC NULLS LAST, portal_users.id ASC
     `,
     [req.params.id]
   );
@@ -3399,6 +3064,37 @@ app.patch("/api/admin/clients/:id/status", authRequired, requireAdmin, async (re
   await run(`UPDATE portal_clients SET is_active = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [active, active ? "active" : "disabled", req.params.id]);
   await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_CLIENT_STATUS", entityType: "portal_client", entityId: String(req.params.id), metadata: { active }, ip: req.ip });
   res.json({ success: true });
+});
+
+app.patch("/api/admin/clients/:id/modules", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const accessYarn = req.body?.access_yarn ? 1 : 0;
+    const accessMercerie = req.body?.access_mercerie ? 1 : 0;
+    if (!accessYarn && !accessMercerie) {
+      return res.status(400).json({ error: "Au moins un module doit être actif." });
+    }
+    const before = await get(
+      `SELECT access_yarn, access_mercerie FROM portal_clients WHERE id = ?`,
+      [req.params.id]
+    );
+    if (!before) return res.status(404).json({ error: "Client introuvable" });
+    await run(
+      `UPDATE portal_clients SET access_yarn = ?, access_mercerie = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [accessYarn, accessMercerie, req.params.id]
+    );
+    await auditLog({
+      userId: req.user.sub,
+      role: req.user.role,
+      action: "ADMIN_CLIENT_MODULES_UPDATE",
+      entityType: "portal_client",
+      entityId: String(req.params.id),
+      metadata: { before, after: { access_yarn: accessYarn, access_mercerie: accessMercerie } },
+      ip: req.ip,
+    });
+    res.json({ success: true, access_yarn: accessYarn, access_mercerie: accessMercerie });
+  } catch (error) {
+    res.status(500).json({ error: "Erreur mise à jour modules" });
+  }
 });
 
 app.get("/api/admin/users", authRequired, requireAdmin, async (req, res) => {
@@ -3632,6 +3328,14 @@ app.get("/api/admin/sync-logs", authRequired, requireAdmin, async (req, res) => 
 app.get("/api/admin/connector-sage", authRequired, requireRoles("super_admin"), async (req, res) => {
   const row = await get(`SELECT * FROM connector_settings WHERE connector_key = 'sage_portal'`);
   const config = row ? JSON.parse(row.config_json || "{}") : {};
+  // Lot E : statut agent leon basé sur le heartbeat le plus récent.
+  const lastAgent = await get(
+    `SELECT agent_id, status, sage_connectivity, leon_connectivity, created_at
+     FROM agent_status_logs ORDER BY id DESC LIMIT 1`
+  );
+  const agentAlive = lastAgent
+    ? new Date() - new Date(lastAgent.created_at) < 60_000
+    : false;
   res.json({
     enabled: Boolean(row?.enabled),
     config: sanitizeConnectorConfig(config),
@@ -3640,6 +3344,12 @@ app.get("/api/admin/connector-sage", authRequired, requireRoles("super_admin"), 
     last_inbound_sync_at: row?.last_inbound_sync_at || null,
     last_outbound_sync_at: row?.last_outbound_sync_at || null,
     last_error: row?.last_error || null,
+    agent: {
+      status: agentAlive ? "online" : "offline",
+      agent_id: lastAgent?.agent_id || null,
+      last_seen_at: lastAgent?.created_at || null,
+      sage_connectivity: lastAgent?.sage_connectivity || null,
+    },
   });
 });
 
@@ -3798,18 +3508,23 @@ app.get("/api/catalog", authRequired, async (req, res) => {
 });
 
 app.get("/api/agent/actions", agentRequired, async (req, res) => {
+  // Lot C : lock atomique multi-process + cap retries.
   const actions = await all(
     `
-      SELECT * FROM erp_pending_actions
-      WHERE status IN ('pending', 'PENDING', 'failed', 'ERROR')
-      ORDER BY id ASC
-      LIMIT 10
-    `
+      UPDATE erp_pending_actions
+      SET status = 'processing', locked_at = CURRENT_TIMESTAMP
+      WHERE id IN (
+        SELECT id FROM erp_pending_actions
+        WHERE status IN ('pending', 'PENDING')
+           OR (status IN ('failed', 'ERROR') AND retry_count < ?)
+        ORDER BY id ASC
+        FOR UPDATE SKIP LOCKED
+        LIMIT 10
+      )
+      RETURNING *
+    `,
+    [SAGE_ACTION_MAX_RETRIES]
   );
-
-  for (const action of actions) {
-    await run(`UPDATE erp_pending_actions SET status = 'processing', locked_at = CURRENT_TIMESTAMP WHERE id = ?`, [action.id]);
-  }
 
   res.json(actions.map((action) => ({
     id: action.id,
@@ -3868,6 +3583,16 @@ app.post("/api/agent/status", agentRequired, async (req, res) => {
     [agentId || "local-agent", status || "online", sageConnectivity || "unknown", leonConnectivity || "unknown", message || null]
   );
   res.json({ success: true });
+});
+
+// Middleware d'erreur global — attrape toute erreur async non gérée (Express 5 forward auto)
+// et renvoie une réponse JSON propre. Évite les pages HTML d'erreur par défaut qui cassent api.js.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  console.error("[unhandled]", req.method, req.path, "-", err.message);
+  res.status(err.statusCode || 500).json({
+    error: err.message || "Erreur serveur",
+  });
 });
 
 app.listen(PORT, "0.0.0.0", () => {

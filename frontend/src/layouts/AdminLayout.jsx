@@ -29,7 +29,10 @@ function AdminLayout() {
   }
 
   useEffect(() => {
-    loadPendingCount().catch(console.error);
+    loadPendingCount().catch((err) => {
+      // Badge count failure is non-blocking; admin pages will show their own errors.
+      console.warn("[AdminLayout] pending-count fetch failed:", err.message);
+    });
   }, []);
 
   function logout() {

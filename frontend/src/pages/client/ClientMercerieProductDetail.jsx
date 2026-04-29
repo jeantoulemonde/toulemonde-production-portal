@@ -32,6 +32,7 @@ function ClientMercerieProductDetail() {
   const [quantity, setQuantity] = useState(1);
   const [cartCount, setCartCount] = useState(readMercerieCart().length);
   const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
 
   useEffect(() => {
     api(`/api/client/catalog/products/${id}`)
@@ -40,7 +41,7 @@ function ClientMercerieProductDetail() {
         const firstVariant = data.color_variants?.[0];
         setSelectedVariantId(firstVariant ? String(firstVariant.id) : "");
       })
-      .catch(console.error);
+      .catch((err) => setError(err.message));
   }, [id]);
 
   const selectedVariant = useMemo(() => (
@@ -50,7 +51,8 @@ function ClientMercerieProductDetail() {
   if (!product) {
     return (
       <PageContainer>
-        <div style={styles.emptyState}>Chargement de la fiche article...</div>
+        {error && <div style={styles.error}>{error}</div>}
+        {!error && <div style={styles.emptyState}>Chargement de la fiche article...</div>}
       </PageContainer>
     );
   }

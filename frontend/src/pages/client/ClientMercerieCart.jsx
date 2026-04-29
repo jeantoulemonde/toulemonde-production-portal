@@ -124,7 +124,16 @@ function ClientMercerieCart() {
       <form style={{ ...local.layout, ...(isMobile ? { gridTemplateColumns: "1fr" } : {}) }} onSubmit={submitOrder}>
         <section style={styles.cardWide}>
           <h2 style={styles.cardTitle}>Articles sélectionnés</h2>
-          {!items.length && <div style={styles.emptyState}>Votre panier mercerie est vide.</div>}
+          {!items.length && (
+            <div style={styles.emptyState}>
+              Votre panier mercerie est vide.
+              <div style={{ marginTop: 12 }}>
+                <button type="button" style={styles.primaryButton} onClick={() => navigate("/client/mercerie")}>
+                  Parcourir le catalogue
+                </button>
+              </div>
+            </div>
+          )}
           {items.map((item) => (
             <div
               key={lineKey(item)}
