@@ -9,6 +9,7 @@ import { chatStyles } from "./chatStyles";
 import { useChat } from "./useChat";
 import ChatMessage from "./ChatMessage";
 import ChatIcon from "./ChatIcon";
+import TypingIndicator from "./TypingIndicator";
 
 const HIDDEN_PATHS = [
   /^\/client\/login/,
@@ -107,7 +108,7 @@ function ChatBubbleClient() {
               </div>
             )}
             {messages.map((m) => <ChatMessage key={m.id} message={m} onFeedback={sendFeedback} />)}
-            {sending && <div style={chatStyles.typingIndicator}>L'assistant écrit…</div>}
+            {sending && <TypingIndicator />}
           </div>
 
           {error && <div style={chatStyles.errorBanner}>{error}</div>}
