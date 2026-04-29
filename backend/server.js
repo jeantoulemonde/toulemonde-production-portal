@@ -10,6 +10,18 @@ const crypto = require("crypto");
 const { Pool } = require("pg");
 const { createSageSyncService } = require("./services/sageSyncService");
 const { createSageScheduler } = require("./jobs/sageScheduler");
+const { createMailService } = require("./services/mailService");
+const { MAIL_TEMPLATES } = require("./services/mailTemplateSeeds");
+const { getVariables, getSampleData } = require("./services/mailVariables");
+const {
+  apiLogger,
+  authLogger,
+  orderLogger,
+  sageLogger,
+  systemLogger,
+  messages: logMessages,
+} = require("./services/loggerCategories");
+const { requestLogger } = require("./middleware/requestLogger");
 
 const app = express();
 const PORT = process.env.PORT || 3010;
@@ -26,6 +38,7 @@ const PENDING_APPROVAL_STATUSES = ["pending_approval"];
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 app.use(rateLimit({ windowMs: 60 * 1000, limit: 240 }));
+app.use(requestLogger);
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 const portalPool = new Pool({
@@ -38,7 +51,7 @@ const portalPool = new Pool({
 });
 
 portalPool.on("error", (err) => {
-  console.error("[POSTGRES] erreur idle client :", err.message);
+  systemLogger.error(logMessages.system.dbIdleError(), { error: err });
 });
 
 // Traduit les ? en $1, $2, ... en respectant les chaînes quotées.
@@ -109,7 +122,7 @@ app.get("/api/health/db", async (req, res) => {
     await get("SELECT 1 AS ok");
     res.json({ status: "ok", database: "connected" });
   } catch (error) {
-    console.error("DB connection error:", error.message);
+    systemLogger.error(logMessages.system.dbFailed(), { error });
     res.status(500).json({
       status: "error",
       database: "disconnected",
@@ -122,7 +135,7 @@ app.get("/api/health/sage", async (req, res) => {
     await testSagePortalConnection();
     res.json({ status: "ok", database: "connected" });
   } catch (error) {
-    console.error("SageSimu connection error:", error.message);
+    sageLogger.error(logMessages.sage.sageOffline({ host: process.env.POSTGRES_HOST }), { error });
     res.status(500).json({
       status: "error",
       database: "disconnected",
@@ -137,7 +150,7 @@ async function auditLog({ userId = null, role = null, action, entityType = null,
       VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     `,
     [userId, role, action, entityType, entityId, metadata ? JSON.stringify(metadata) : null, ip]
-  ).catch((error) => console.error("Audit log error:", error.message));
+  ).catch((error) => systemLogger.error(logMessages.system.auditLogError(), { error, action }));
 }
 
 function signAccessToken(user) {
@@ -172,7 +185,15 @@ function authRequired(req, res, next) {
   try {
     req.user = jwt.verify(token, JWT_SECRET);
     next();
-  } catch {
+  } catch (err) {
+    if (err && err.name === "TokenExpiredError") {
+      authLogger.warn(logMessages.auth.tokenExpired({ route: req.path }), { ip: req.ip });
+    } else {
+      authLogger.error(logMessages.auth.tokenInvalid({ route: req.path }), {
+        ip: req.ip,
+        tokenFragment: token.slice(0, 12),
+      });
+    }
     res.status(401).json({
       error: "Token invalide ou expiré",
       code: "TOKEN_INVALID",
@@ -1151,6 +1172,8 @@ const sageScheduler = createSageScheduler({
   runSageExport: sageSyncService.runSageExport,
 });
 
+const mailService = createMailService({ run, get });
+
 async function initDb() {
   // Schéma : tout est défini dans backend/sql/init_postgres.sql (rejouable, IF NOT EXISTS partout).
   const sqlPath = path.join(__dirname, "sql", "init_postgres.sql");
@@ -1284,16 +1307,82 @@ async function initDb() {
   }
 
   await seedTextileCatalogDataset();
+  await seedMailTemplates();
+}
+
+async function seedMailTemplates() {
+  for (const tpl of MAIL_TEMPLATES) {
+    await run(
+      `INSERT OR IGNORE INTO mail_templates (template_key, label, subject, html_body, text_body, variables, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, 1)`,
+      [tpl.template_key, tpl.label, tpl.subject, tpl.html_body, tpl.text_body, tpl.variables]
+    );
+  }
 }
 
 initDb()
-  .then(() => sageScheduler.startSageScheduler())
+  .then(() => {
+    systemLogger.info(logMessages.system.dbConnected({ db: process.env.POSTGRES_DB }));
+    checkMailConfiguration();
+    sageScheduler.startSageScheduler();
+  })
   .catch((error) => {
-    console.error("Erreur init DB portail :", error);
+    systemLogger.critical(logMessages.system.dbInitFailed(), { error });
   });
+
+// Vérifie au boot que la configuration mail est cohérente, et alerte si :
+//   - driver=resend mais clé absente   → critical (impossible d'envoyer)
+//   - driver=console en production     → warn (silence dangereux en prod)
+//   - driver inconnu                   → critical
+function checkMailConfiguration() {
+  const driver = (process.env.EMAIL_DRIVER || "console").toLowerCase();
+  const isProd = process.env.NODE_ENV === "production";
+  const { mailLogger } = require("./services/loggerCategories");
+
+  if (driver === "resend") {
+    if (!process.env.RESEND_API_KEY) {
+      mailLogger.critical("EMAIL_DRIVER=resend mais RESEND_API_KEY est absent : aucun email ne pourra partir");
+      return;
+    }
+    mailLogger.info(`Service mail prêt (driver: resend, expéditeur: ${process.env.EMAIL_FROM || "onboarding@resend.dev"})`);
+    return;
+  }
+
+  if (driver === "console") {
+    if (isProd) {
+      mailLogger.warn("EMAIL_DRIVER=console en production : les emails sont SIMULÉS, aucun destinataire ne reçoit rien");
+    } else {
+      mailLogger.info("Service mail en mode simulation locale (driver: console, aucun envoi réel)");
+    }
+    return;
+  }
+
+  mailLogger.critical(`EMAIL_DRIVER inconnu : "${driver}" (valeurs acceptées : console, resend)`);
+}
 
 app.get("/api/health", (req, res) => {
   res.json({ ok: true, app: "toulemonde-client-portal" });
+});
+
+// Remontée des erreurs JS frontend. Pas d'auth (l'utilisateur peut être déconnecté).
+// Rate-limit dédié pour éviter qu'une boucle d'erreur ne flood le serveur.
+const clientErrorLimiter = rateLimit({ windowMs: 60 * 1000, limit: 10 });
+app.post("/api/client-error", clientErrorLimiter, (req, res) => {
+  const body = req.body || {};
+  const message = String(body.message || "Erreur frontend non décrite").slice(0, 2000);
+  const stack = body.stack ? String(body.stack).slice(0, 8000) : null;
+  const url = body.url ? String(body.url).slice(0, 500) : null;
+  const userAgent = body.userAgent ? String(body.userAgent).slice(0, 500) : null;
+  const userId = Number.isFinite(Number(body.userId)) ? Number(body.userId) : null;
+  apiLogger.error(message, {
+    category: "frontend",
+    error: { message, stack },
+    url,
+    userAgent,
+    userId,
+    ip: req.ip,
+  });
+  res.json({ ok: true });
 });
 
 async function loginWithRoles(req, res, allowedRoles, redirectTo) {
@@ -1302,12 +1391,19 @@ async function loginWithRoles(req, res, allowedRoles, redirectTo) {
     if (!email || !password) return res.status(400).json({ error: "email et password requis" });
 
     const user = await get(`SELECT * FROM portal_users WHERE email = ? AND is_active = 1 AND COALESCE(status, 'active') = 'active'`, [email]);
-    if (!user || !(await bcrypt.compare(password, user.password_hash))) {
-      await auditLog({ action: "AUTH_LOGIN_FAILED", metadata: { email }, ip: req.ip });
+    if (!user) {
+      await auditLog({ action: "AUTH_LOGIN_FAILED", metadata: { email, reason: "not_found" }, ip: req.ip });
+      authLogger.warn(logMessages.auth.loginNotFound({ email }), { ip: req.ip });
+      return res.status(401).json({ error: "Identifiants invalides" });
+    }
+    if (!(await bcrypt.compare(password, user.password_hash))) {
+      await auditLog({ userId: user.id, role: user.role, action: "AUTH_LOGIN_FAILED", metadata: { email, reason: "bad_password" }, ip: req.ip });
+      authLogger.warn(logMessages.auth.loginBadPassword({ email }), { userId: user.id, ip: req.ip });
       return res.status(401).json({ error: "Identifiants invalides" });
     }
     if (!allowedRoles.includes(user.role)) {
       await auditLog({ userId: user.id, role: user.role, action: "AUTH_LOGIN_FORBIDDEN_ROLE", metadata: { email, redirectTo }, ip: req.ip });
+      authLogger.warn(logMessages.auth.loginForbiddenRole({ email, redirectTo }), { userId: user.id, role: user.role, ip: req.ip });
       return res.status(403).json({ error: "Ce compte n'est pas autorisé sur cet espace." });
     }
 
@@ -1333,6 +1429,11 @@ async function loginWithRoles(req, res, allowedRoles, redirectTo) {
 
     await auditLog({ userId: user.id, role: user.role, action: "AUTH_LOGIN", ip: req.ip });
     await run(`UPDATE portal_users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?`, [user.id]);
+    authLogger.info(logMessages.auth.loginSuccess({ email: user.email, role: user.role }), {
+      userId: user.id,
+      role: user.role,
+      ip: req.ip,
+    });
 
     res.json({
       accessToken: signAccessToken(user),
@@ -1341,7 +1442,7 @@ async function loginWithRoles(req, res, allowedRoles, redirectTo) {
       redirectTo,
     });
   } catch (error) {
-    console.error("Erreur login :", error.message);
+    authLogger.error("Erreur lors de la connexion", { error, ip: req.ip });
     res.status(500).json({ error: "Erreur authentification" });
   }
 }
@@ -1394,13 +1495,29 @@ async function forgotPasswordForRoles(req, res, allowedRoles, resetPrefix) {
       [hashToken(token), expiresAt, user.id]
     );
     await auditLog({ userId: user.id, role: user.role, action: "AUTH_PASSWORD_RESET_REQUEST", entityType: "portal_user", entityId: String(user.id), ip: req.ip });
+    authLogger.info(logMessages.auth.resetRequested({ email: user.email }), { userId: user.id, ip: req.ip });
+
+    // Lot D : envoi du mail réel via mailService.
+    const portalBase = process.env.PORTAL_PUBLIC_URL || "";
+    const resetLink = `${portalBase}${resetPrefix}/${token}`;
+    mailService.sendMail({
+      templateKey: "reset_password",
+      to: user.email,
+      variables: {
+        fullName: user.full_name || user.email,
+        resetLink,
+        expiresIn: "30 minutes",
+        portalLink: portalBase,
+      },
+    }).catch(() => { /* mailService logue déjà l'erreur via mailLogger */ });
 
     res.json({
       ...generic,
-      resetLink: process.env.NODE_ENV === "production" ? undefined : `${resetPrefix}/${token}`,
+      // En dev, on renvoie quand même le lien pour faciliter les tests sans driver Resend.
+      resetLink: process.env.NODE_ENV === "production" ? undefined : resetLink,
     });
   } catch (error) {
-    console.error("Erreur forgot password :", error.message);
+    authLogger.error("Erreur lors de la demande de réinitialisation", { error, ip: req.ip });
     res.json({ success: true, message: "Si le compte existe, un lien de réinitialisation a été préparé." });
   }
 }
@@ -1417,7 +1534,10 @@ async function resetPasswordForRoles(req, res, allowedRoles) {
       `SELECT * FROM portal_users WHERE reset_token_hash = ? AND reset_token_expires_at > ? AND is_active = 1`,
       [tokenHash, new Date().toISOString()]
     );
-    if (!user || !allowedRoles.includes(user.role)) return res.status(400).json({ error: "Lien invalide ou expiré" });
+    if (!user || !allowedRoles.includes(user.role)) {
+      authLogger.warn(logMessages.auth.resetInvalid(), { ip: req.ip });
+      return res.status(400).json({ error: "Lien invalide ou expiré" });
+    }
 
     await run(
       `
@@ -1428,9 +1548,10 @@ async function resetPasswordForRoles(req, res, allowedRoles) {
       [await bcrypt.hash(password, 12), user.id]
     );
     await auditLog({ userId: user.id, role: user.role, action: "AUTH_PASSWORD_RESET_DONE", entityType: "portal_user", entityId: String(user.id), ip: req.ip });
+    authLogger.info(logMessages.auth.resetUsed({ email: user.email }), { userId: user.id, ip: req.ip });
     res.json({ success: true });
   } catch (error) {
-    console.error("Erreur reset password :", error.message);
+    authLogger.error("Erreur lors de la réinitialisation du mot de passe", { error, ip: req.ip });
     res.status(500).json({ error: "Erreur réinitialisation mot de passe" });
   }
 }
@@ -1508,13 +1629,84 @@ async function listClientOrders(req, res) {
     );
     res.json(orders);
   } catch (error) {
-    console.error("Erreur lecture commandes :", error.message);
+    orderLogger.error("Erreur lors de la lecture des commandes du client", {
+      error,
+      userId: req.user?.sub,
+    });
     res.status(500).json({ error: "Erreur lecture commandes" });
   }
 }
 
 app.get("/api/client/orders", authRequired, requireClient, requireClientModule("yarn"), listClientOrders);
 app.get("/api/orders", authRequired, listClientOrders);
+
+// Helper Lot E : envoie une notification client à partir d'un order.
+// - Recherche l'email destinataire (priorité contact_email, puis email du compte client).
+// - Si rien : skip silencieusement (loggué dans mail_logs côté mailService).
+// - Fire-and-forget : ne bloque jamais le flow appelant.
+// Miroir des labels frontend (cf. utils/formatters.js) — utilisé dans les emails.
+const CLIENT_STATUS_LABELS = {
+  draft: "Brouillon",
+  submitted: "Envoyée",
+  pending_approval: "En attente validation",
+  pending_validation: "En validation",
+  rejected: "Refusée",
+  approved: "Validée",
+  pending_sage_sync: "Acceptée",
+  sent_to_sage: "Acceptée",
+  in_production: "En production",
+  ready: "Prête",
+  delivered: "Livrée",
+  cancelled: "Annulée",
+};
+function clientStatusLabel(status) {
+  return CLIENT_STATUS_LABELS[status] || status || "Inconnu";
+}
+
+async function notifyClientByOrder(order, templateKey, extraVars = {}) {
+  if (!order) return;
+  try {
+    const client = await get(
+      `SELECT pc.id, pc.company_name, pc.contact_email, pc.email, pu.full_name
+       FROM portal_clients pc
+       LEFT JOIN portal_users pu ON pu.client_id = pc.id AND pu.role = 'client'
+       WHERE pc.id = ? OR pc.customer_code = ?
+       LIMIT 1`,
+      [order.client_id || -1, order.customer_code || ""]
+    );
+    const to = client?.contact_email || client?.email;
+    if (!to) {
+      const { mailLogger } = require("./services/loggerCategories");
+      mailLogger.warn(logMessages.mail.noRecipient({ orderId: order.id, templateKey }), {
+        orderId: order.id,
+        clientId: order.client_id,
+        templateKey,
+      });
+      return;
+    }
+    const portalBase = process.env.PORTAL_PUBLIC_URL || "";
+    const variables = {
+      fullName: client?.full_name || client?.contact_email || client?.email || "",
+      companyName: client?.company_name || "",
+      orderNumber: order.order_number || `#${order.id}`,
+      portalLink: `${portalBase}/client/orders/${order.id}`,
+      ...extraVars,
+    };
+    mailService.sendMail({
+      templateKey,
+      to,
+      variables,
+      orderId: order.id,
+    }).catch(() => { /* mailService logue déjà l'erreur via mailLogger */ });
+  } catch (err) {
+    const { mailLogger } = require("./services/loggerCategories");
+    mailLogger.error("Erreur lors de la préparation d'un email de notification commande", {
+      error: err,
+      orderId: order?.id,
+      templateKey,
+    });
+  }
+}
 
 async function createPortalOrder(req, res) {
   try {
@@ -1650,9 +1842,42 @@ async function createPortalOrder(req, res) {
     });
 
     const order = await get(`SELECT * FROM portal_orders WHERE id = ?`, [result.id]);
+
+    // Lot E : confirmation client uniquement si la commande est soumise (pas un brouillon).
+    if (status === "pending_approval") {
+      const orderLinesHtml = mailService.renderOrderLinesHtml(normalizedLines);
+      await notifyClientByOrder(order, "order_submitted", {
+        orderLines: orderLinesHtml,
+        submittedAt: new Date().toLocaleDateString("fr-BE"),
+        portalLink: `${process.env.PORTAL_PUBLIC_URL || ""}/client/orders/${order.id}`,
+      });
+    }
+
+    if (status === "draft") {
+      orderLogger.info(logMessages.order.draftCreated({ orderId: orderNumber, type: "yarn" }), {
+        orderId: orderNumber,
+        userId: req.user.sub,
+        clientId,
+      });
+    } else {
+      orderLogger.info(logMessages.order.submitted({
+        orderId: orderNumber,
+        fullName: req.user.email,
+        totalKg: totalQuantity,
+        linesCount: normalizedLines.length,
+      }), {
+        orderId: orderNumber,
+        userId: req.user.sub,
+        clientId,
+      });
+    }
+
     res.status(201).json({ order, lines: normalizedLines });
   } catch (error) {
-    console.error("Erreur création commande portail :", error.message);
+    orderLogger.error(logMessages.order.saveError({ userId: req.user?.sub }), {
+      error,
+      userId: req.user?.sub,
+    });
     res.status(500).json({ error: "Erreur création commande" });
   }
 }
@@ -1684,7 +1909,7 @@ async function getClientProfile(req, res) {
       contact_phone: client.contact_phone || "",
     });
   } catch (error) {
-    console.error("Erreur profil client :", error.message);
+    apiLogger.error("Erreur lecture profil client", { error, userId: req.user?.sub });
     res.status(500).json({ error: "Erreur lecture profil client" });
   }
 }
@@ -1774,7 +1999,7 @@ async function updateClientProfile(req, res) {
       },
     });
   } catch (error) {
-    console.error("Erreur mise à jour profil client :", error.message);
+    apiLogger.error("Erreur mise à jour profil client", { error, userId: req.user?.sub });
     res.status(500).json({ error: "Erreur mise à jour profil client" });
   }
 }
@@ -1824,8 +2049,9 @@ app.put("/api/client/orders/:id", authRequired, requireClient, requireClientModu
     const owned = await getOwnedClientOrder(req, res);
     if (!owned) return;
     const { order } = owned;
-    if (order.status !== "draft") {
-      return res.status(403).json({ error: "Seuls les brouillons peuvent être modifiés." });
+    // Bug #9 : draft + pending_validation (admin a demandé correction) sont éditables.
+    if (!["draft", "pending_validation"].includes(order.status)) {
+      return res.status(403).json({ error: "Cette demande ne peut plus être modifiée." });
     }
 
     const nextStatus = req.body?.status === "submitted" ? "pending_approval" : "draft";
@@ -1849,9 +2075,21 @@ app.put("/api/client/orders/:id", authRequired, requireClient, requireClientModu
       ip: req.ip,
     });
 
+    if (nextStatus === "pending_approval") {
+      orderLogger.info(logMessages.order.submitted({
+        orderId: order.order_number || order.id,
+        fullName: req.user.email,
+        totalKg: totalQuantity,
+        linesCount: normalizedLines.length,
+      }), { orderId: order.order_number || order.id, userId: req.user.sub });
+    }
+
     res.json({ success: true, order: await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]), lines: await getPortalOrderLines({ id: order.id }) });
   } catch (error) {
-    console.error("Erreur mise à jour brouillon :", error.message);
+    orderLogger.error(logMessages.order.saveError({ orderId: req.params.id, userId: req.user?.sub }), {
+      error,
+      userId: req.user?.sub,
+    });
     res.status(500).json({ error: "Erreur mise à jour brouillon" });
   }
 });
@@ -1883,9 +2121,24 @@ app.post("/api/client/orders/:id/submit", authRequired, requireClient, requireCl
     await run(`UPDATE portal_orders SET status = 'pending_approval', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [order.id]);
     await insertStatusHistory(order.id, order.status, "pending_approval", "portal", "Brouillon soumis depuis le portail");
     await auditLog({ userId: req.user.sub, role: req.user.role, action: "PORTAL_ORDER_DRAFT_SUBMIT", entityType: "portal_order", entityId: String(order.id), ip: req.ip });
-    res.json({ success: true, order: await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]) });
+    const updatedOrder = await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]);
+    // Lot E : confirmation client après soumission depuis brouillon.
+    await notifyClientByOrder(updatedOrder, "order_submitted", {
+      orderLines: mailService.renderOrderLinesHtml(normalizedLines),
+      submittedAt: new Date().toLocaleDateString("fr-BE"),
+    });
+    orderLogger.info(logMessages.order.submitted({
+      orderId: updatedOrder.order_number || updatedOrder.id,
+      fullName: req.user.email,
+      totalKg: updatedOrder.quantity_kg,
+      linesCount: normalizedLines.length,
+    }), { orderId: updatedOrder.order_number || updatedOrder.id, userId: req.user.sub });
+    res.json({ success: true, order: updatedOrder });
   } catch (error) {
-    console.error("Erreur soumission brouillon :", error.message);
+    orderLogger.error(logMessages.order.saveError({ orderId: req.params.id, userId: req.user?.sub }), {
+      error,
+      userId: req.user?.sub,
+    });
     res.status(500).json({ error: "Erreur soumission brouillon" });
   }
 });
@@ -1901,9 +2154,17 @@ app.delete("/api/client/orders/:id", authRequired, requireClient, requireClientM
     await run(`DELETE FROM portal_order_status_history WHERE portal_order_id = ?`, [order.id]);
     await run(`DELETE FROM portal_orders WHERE id = ?`, [order.id]);
     await auditLog({ userId: req.user.sub, role: req.user.role, action: "PORTAL_ORDER_DRAFT_DELETE", entityType: "portal_order", entityId: String(order.id), ip: req.ip });
+    orderLogger.info(logMessages.order.draftDeleted({
+      orderId: order.order_number || order.id,
+      by: req.user.email,
+    }), { orderId: order.order_number || order.id, userId: req.user.sub });
     res.json({ success: true });
   } catch (error) {
-    console.error("Erreur suppression brouillon :", error.message);
+    orderLogger.error("Erreur lors de la suppression d'un brouillon", {
+      error,
+      userId: req.user?.sub,
+      orderId: req.params.id,
+    });
     res.status(500).json({ error: "Erreur suppression brouillon" });
   }
 });
@@ -2254,7 +2515,7 @@ app.get("/api/client/catalog/categories", authRequired, requireClient, requireCl
     );
     res.json(categories.map((category) => ({ ...category, is_active: Boolean(category.is_active) })));
   } catch (error) {
-    console.error("Erreur lecture catégories mercerie :", error.message);
+    apiLogger.error("Erreur lecture catégories mercerie", { error, userId: req.user?.sub });
     res.status(500).json({ error: "Erreur lecture catégories" });
   }
 });
@@ -2268,7 +2529,7 @@ app.get("/api/client/catalog/products", authRequired, requireClient, requireClie
     });
     res.json(products);
   } catch (error) {
-    console.error("Erreur lecture produits mercerie :", error.message);
+    apiLogger.error("Erreur lecture produits mercerie", { error, userId: req.user?.sub });
     res.status(500).json({ error: "Erreur lecture produits" });
   }
 });
@@ -2395,9 +2656,40 @@ app.post("/api/client/catalog/orders", authRequired, requireClient, requireClien
     });
 
     const detail = await getCatalogOrderDetail(orderResult.id, client.id);
+
+    // Lot E : confirmation client de soumission mercerie.
+    // notifyClientByOrder attend un order avec client_id/customer_code/order_number ; le row catalog_orders les a.
+    const orderLinesHtml = mailService.renderOrderLinesHtml(normalizedLines.map((l) => ({
+      product_name: l.product?.name,
+      sku: l.product?.sku,
+      color_name: l.colorVariant?.color_name,
+      quantity: l.quantity,
+      unit_label: l.product?.unit_label,
+    })));
+    await notifyClientByOrder(
+      { id: detail.order.id, client_id: client.id, customer_code: client.customer_code, order_number: detail.order.order_number },
+      "order_submitted",
+      {
+        orderLines: orderLinesHtml,
+        submittedAt: new Date().toLocaleDateString("fr-BE"),
+        portalLink: `${process.env.PORTAL_PUBLIC_URL || ""}/client/mercerie/orders/${detail.order.id}`,
+      }
+    );
+
+    orderLogger.info(logMessages.order.submitted({
+      orderId: orderNumber,
+      fullName: req.user.email,
+      linesCount: normalizedLines.length,
+    }), {
+      orderId: orderNumber,
+      userId: req.user.sub,
+      clientId: client.id,
+      type: "mercerie",
+    });
+
     res.status(201).json(detail);
   } catch (error) {
-    console.error("Erreur création commande mercerie :", error.message);
+    orderLogger.error("Erreur création commande mercerie", { error, userId: req.user?.sub });
     res.status(500).json({ error: "Erreur création commande mercerie" });
   }
 });
@@ -2984,13 +3276,32 @@ app.post("/api/admin/clients", authRequired, requireAdmin, async (req, res) => {
       );
       invitationLink = `/client/reset-password/${token}`;
       await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_USER_CREATE", entityType: "portal_user", entityId: String(userResult.id), ip: req.ip });
+
+      // Lot D : envoi email d'invitation.
+      const portalBase = process.env.PORTAL_PUBLIC_URL || "";
+      mailService.sendMail({
+        templateKey: "invite_user",
+        to: userEmail,
+        variables: {
+          fullName: userPayload.name || body.contact_name || body.company_name || userEmail,
+          companyName: body.company_name,
+          invitationLink: `${portalBase}${invitationLink}`,
+          expiresIn: "30 minutes",
+          portalLink: portalBase,
+        },
+      }).catch(() => { /* mailService logue déjà l'erreur via mailLogger */ });
     }
 
     await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_CLIENT_CREATE", entityType: "portal_client", entityId: customerCode, ip: req.ip });
     const client = await get(`SELECT * FROM portal_clients WHERE id = ?`, [clientResult.id]);
-    res.status(201).json({ client, invitationLink });
+    // En prod, le lien n'est pas renvoyé (sécurité). En dev, on le garde pour le debug.
+    res.status(201).json({
+      client,
+      invitationLink: process.env.NODE_ENV === "production" ? undefined : invitationLink,
+      invitedEmail: userEmail || null,
+    });
   } catch (error) {
-    console.error("Erreur création client admin :", error.message);
+    apiLogger.error("Erreur création client (admin)", { error, userId: req.user?.sub });
     res.status(500).json({ error: "Erreur création client" });
   }
 });
@@ -3143,8 +3454,38 @@ app.post("/api/admin/users", authRequired, requireAdmin, async (req, res) => {
       ]
     );
     await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_USER_CREATE", entityType: "portal_user", entityId: String(result.id), ip: req.ip });
-    res.status(201).json({ success: true, id: result.id, invitationLink: body.role === "client" ? `/client/reset-password/${token}` : `/admin/reset-password/${token}` });
+
+    // Lot D : envoi invitation email.
+    const invitationLink = body.role === "client" ? `/client/reset-password/${token}` : `/admin/reset-password/${token}`;
+    const portalBase = process.env.PORTAL_PUBLIC_URL || "";
+    mailService.sendMail({
+      templateKey: "invite_user",
+      to: body.email,
+      variables: {
+        fullName: body.full_name || body.name || body.email,
+        companyName: linkedClient?.company_name || "Toulemonde Production",
+        invitationLink: `${portalBase}${invitationLink}`,
+        expiresIn: "30 minutes",
+        portalLink: portalBase,
+      },
+    }).catch(() => { /* mailService logue déjà l'erreur via mailLogger */ });
+
+    authLogger.info(logMessages.adminUser?.created
+      ? logMessages.adminUser.created({ email: body.email, role: body.role, by: req.user.email })
+      : `Utilisateur ${body.email} créé`, {
+      userId: req.user.sub,
+      createdUserId: result.id,
+      role: body.role,
+    });
+
+    res.status(201).json({
+      success: true,
+      id: result.id,
+      invitationLink: process.env.NODE_ENV === "production" ? undefined : invitationLink,
+      invitedEmail: body.email,
+    });
   } catch (error) {
+    apiLogger.error("Erreur création utilisateur (admin)", { error, userId: req.user?.sub });
     res.status(500).json({ error: "Erreur création utilisateur" });
   }
 });
@@ -3173,6 +3514,60 @@ app.patch("/api/admin/users/:id/status", authRequired, requireAdmin, async (req,
   res.json({ success: true });
 });
 
+app.delete("/api/admin/users/:id", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const targetId = Number(req.params.id);
+    if (!Number.isFinite(targetId)) {
+      return res.status(400).json({ error: "Identifiant invalide" });
+    }
+    // Garde-fou 1 : pas d'auto-suppression.
+    if (Number(req.user.sub) === targetId) {
+      return res.status(403).json({ error: "Vous ne pouvez pas supprimer votre propre compte" });
+    }
+    // Garde-fou 2 : utilisateur existe.
+    const target = await get(
+      `SELECT id, email, full_name, role FROM portal_users WHERE id = ?`,
+      [targetId]
+    );
+    if (!target) {
+      return res.status(404).json({ error: "Utilisateur introuvable" });
+    }
+    // Garde-fou 3 : ne jamais supprimer le dernier super_admin actif.
+    if (target.role === "super_admin") {
+      const remaining = await get(
+        `SELECT COUNT(*)::int AS count FROM portal_users
+         WHERE role = 'super_admin' AND is_active = 1 AND COALESCE(status, 'active') = 'active' AND id <> ?`,
+        [targetId]
+      );
+      if (!remaining || remaining.count === 0) {
+        return res.status(403).json({ error: "Impossible de supprimer le dernier super admin actif" });
+      }
+    }
+
+    await run(`DELETE FROM portal_users WHERE id = ?`, [targetId]);
+    await auditLog({
+      userId: req.user.sub,
+      role: req.user.role,
+      action: "ADMIN_USER_DELETE",
+      entityType: "portal_user",
+      entityId: String(targetId),
+      metadata: { email: target.email, role: target.role },
+      ip: req.ip,
+    });
+
+    authLogger.info(logMessages.adminUser.deleted({ email: target.email, by: req.user.email }), {
+      userId: req.user.sub,
+      targetUserId: targetId,
+      targetEmail: target.email,
+    });
+
+    res.json({ success: true, message: "Utilisateur supprimé" });
+  } catch (error) {
+    apiLogger.error("Erreur suppression utilisateur (admin)", { error, userId: req.user?.sub });
+    res.status(500).json({ error: "Erreur suppression utilisateur" });
+  }
+});
+
 app.post("/api/admin/users/:id/reset-password", authRequired, requireAdmin, async (req, res) => {
   const user = await get(`SELECT * FROM portal_users WHERE id = ?`, [req.params.id]);
   if (!user) return res.status(404).json({ error: "Utilisateur introuvable" });
@@ -3182,7 +3577,26 @@ app.post("/api/admin/users/:id/reset-password", authRequired, requireAdmin, asyn
     [hashToken(token), new Date(Date.now() + 30 * 60 * 1000).toISOString(), req.params.id]
   );
   await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_USER_RESET_PASSWORD", entityType: "portal_user", entityId: String(req.params.id), ip: req.ip });
-  res.json({ success: true, resetLink: user.role === "client" ? `/client/reset-password/${token}` : `/admin/reset-password/${token}` });
+
+  // Lot D : envoi mail réel.
+  const resetLink = user.role === "client" ? `/client/reset-password/${token}` : `/admin/reset-password/${token}`;
+  const portalBase = process.env.PORTAL_PUBLIC_URL || "";
+  mailService.sendMail({
+    templateKey: "reset_password",
+    to: user.email,
+    variables: {
+      fullName: user.full_name || user.email,
+      resetLink: `${portalBase}${resetLink}`,
+      expiresIn: "30 minutes",
+      portalLink: portalBase,
+    },
+  }).catch(() => { /* mailService logue déjà l'erreur via mailLogger */ });
+
+  res.json({
+    success: true,
+    resetLink: process.env.NODE_ENV === "production" ? undefined : resetLink,
+    sentTo: user.email,
+  });
 });
 
 async function approvePortalOrder(req, res) {
@@ -3222,10 +3636,27 @@ async function approvePortalOrder(req, res) {
       ip: req.ip,
     });
 
-    console.log(`[ORDER APPROVAL] order ${order.id} approved by user ${req.user.sub}`);
-    res.json({ success: true, sageAction, order: await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]) });
+    orderLogger.info(logMessages.order.approved({
+      orderId: order.order_number || order.id,
+      by: req.user.email,
+      comment,
+    }), {
+      orderId: order.order_number || order.id,
+      userId: req.user.sub,
+    });
+
+    const approvedOrderRefreshed = await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]);
+    // Lot E : notifier le client de la validation.
+    await notifyClientByOrder(approvedOrderRefreshed, "order_approved", {
+      adminComment: comment || "(Aucun commentaire)",
+    });
+    res.json({ success: true, sageAction, order: approvedOrderRefreshed });
   } catch (error) {
-    console.error("Erreur approbation commande :", error.message);
+    orderLogger.error("Erreur lors de l'approbation d'une commande", {
+      error,
+      orderId: req.params.id,
+      userId: req.user?.sub,
+    });
     res.status(500).json({ error: "Erreur approbation commande" });
   }
 }
@@ -3293,9 +3724,44 @@ app.patch("/api/admin/orders/:id/status", authRequired, requireAdmin, async (req
       ip: req.ip,
     });
 
-    res.json({ success: true, order: await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]) });
+    const updatedOrder = await get(`SELECT * FROM portal_orders WHERE id = ?`, [order.id]);
+
+    // Lot E : notifier UNIQUEMENT sur les transitions clés côté client (refus / demande correction).
+    // Les transitions Sage automatiques (in_production, ready, delivered) ne déclenchent pas
+    // d'email — elles sont visibles dans l'écran client.
+    if (["rejected", "pending_validation"].includes(status) && status !== order.status) {
+      await notifyClientByOrder(updatedOrder, "order_status_changed", {
+        oldStatus: clientStatusLabel(order.status),
+        newStatus: clientStatusLabel(status),
+        adminComment: message || internalComment || "(Aucun commentaire)",
+      });
+    }
+
+    if (status !== order.status) {
+      const logFn = status === "rejected" ? orderLogger.warn.bind(orderLogger) : orderLogger.info.bind(orderLogger);
+      const messageFn = status === "rejected"
+        ? logMessages.order.rejected({ orderId: order.order_number || order.id, by: req.user.email, reason: message || internalComment })
+        : logMessages.order.statusChanged({
+          orderId: order.order_number || order.id,
+          oldStatus: order.status,
+          newStatus: status,
+          changedBy: req.user.email,
+        });
+      logFn(messageFn, {
+        orderId: order.order_number || order.id,
+        userId: req.user.sub,
+        oldStatus: order.status,
+        newStatus: status,
+      });
+    }
+
+    res.json({ success: true, order: updatedOrder });
   } catch (error) {
-    console.error("Erreur changement statut commande :", error.message);
+    orderLogger.error("Erreur lors du changement de statut d'une commande", {
+      error,
+      orderId: req.params.id,
+      userId: req.user?.sub,
+    });
     res.status(500).json({ error: "Erreur changement statut commande" });
   }
 });
@@ -3323,6 +3789,122 @@ app.post("/api/admin/orders/:id/internal-comment", authRequired, requireAdmin, a
 app.get("/api/admin/sync-logs", authRequired, requireAdmin, async (req, res) => {
   const logs = await all(`SELECT * FROM sync_logs ORDER BY id DESC LIMIT 200`);
   res.json(logs);
+});
+
+// ============================================================
+// Emails transactionnels — gestion templates + logs (admin)
+// ============================================================
+
+app.get("/api/admin/mail-templates", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const templates = await all(
+      `SELECT t.id, t.template_key, t.label, t.subject, t.is_active, t.updated_at,
+              t.updated_by, u.full_name AS updated_by_name
+       FROM mail_templates t
+       LEFT JOIN portal_users u ON u.id = t.updated_by
+       ORDER BY t.id ASC`
+    );
+    res.json(templates);
+  } catch (error) {
+    res.status(500).json({ error: "Erreur lecture templates email" });
+  }
+});
+
+app.get("/api/admin/mail-templates/:key", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const template = await get(
+      `SELECT t.*, u.full_name AS updated_by_name
+       FROM mail_templates t
+       LEFT JOIN portal_users u ON u.id = t.updated_by
+       WHERE t.template_key = ?`,
+      [req.params.key]
+    );
+    if (!template) return res.status(404).json({ error: "Template introuvable" });
+    res.json({
+      ...template,
+      available_variables: getVariables(req.params.key),
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Erreur lecture template" });
+  }
+});
+
+app.put("/api/admin/mail-templates/:key", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    if (!body.subject || !body.html_body) {
+      return res.status(400).json({ error: "subject et html_body requis" });
+    }
+    const existing = await get(`SELECT id FROM mail_templates WHERE template_key = ?`, [req.params.key]);
+    if (!existing) return res.status(404).json({ error: "Template introuvable" });
+    await run(
+      `UPDATE mail_templates SET subject = ?, html_body = ?, text_body = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE template_key = ?`,
+      [body.subject, body.html_body, body.text_body || null, req.user.sub, req.params.key]
+    );
+    mailService.clearTemplateCache(req.params.key);
+    await auditLog({
+      userId: req.user.sub,
+      role: req.user.role,
+      action: "ADMIN_MAIL_TEMPLATE_UPDATE",
+      entityType: "mail_template",
+      entityId: req.params.key,
+      ip: req.ip,
+    });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Erreur sauvegarde template" });
+  }
+});
+
+app.post("/api/admin/mail-templates/:key/preview", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const template = await get(`SELECT * FROM mail_templates WHERE template_key = ?`, [req.params.key]);
+    if (!template) return res.status(404).json({ error: "Template introuvable" });
+    const variables = { ...getSampleData(req.params.key), ...(req.body?.variables || {}) };
+    const rendered = mailService.renderTemplate
+      ? mailService.renderTemplate({ template, variables })
+      : { subject: template.subject, html: template.html_body, text: template.text_body };
+    res.json(rendered);
+  } catch (error) {
+    res.status(500).json({ error: "Erreur génération aperçu" });
+  }
+});
+
+app.post("/api/admin/mail-templates/:key/test", authRequired, requireAdmin, async (req, res) => {
+  try {
+    const to = req.body?.to;
+    if (!to) return res.status(400).json({ error: "Adresse 'to' requise" });
+    const variables = getSampleData(req.params.key);
+    const result = await mailService.sendMail({
+      templateKey: req.params.key,
+      to,
+      variables,
+    });
+    await auditLog({
+      userId: req.user.sub,
+      role: req.user.role,
+      action: "ADMIN_MAIL_TEMPLATE_TEST",
+      entityType: "mail_template",
+      entityId: req.params.key,
+      metadata: { to, success: result.success },
+      ip: req.ip,
+    });
+    if (!result.success) {
+      return res.status(502).json({ error: result.error || "Échec envoi", success: false });
+    }
+    res.json({ success: true, simulated: Boolean(result.simulated) });
+  } catch (error) {
+    res.status(500).json({ error: "Erreur envoi test" });
+  }
+});
+
+// La consultation des emails passe désormais par /api/admin/logs/mail (Activité du portail).
+// La table mail_logs reste alimentée pour historique mais n'est plus exposée par cette route.
+app.get("/api/admin/mail-logs", authRequired, requireAdmin, (req, res) => {
+  res.status(410).json({
+    error: "Route retirée. Consultez l'onglet Emails dans Activité du portail.",
+    redirect: "/admin/logs",
+  });
 });
 
 app.get("/api/admin/connector-sage", authRequired, requireRoles("super_admin"), async (req, res) => {
@@ -3370,7 +3952,7 @@ app.put("/api/admin/connector-sage", authRequired, requireRoles("super_admin"), 
     );
     await auditLog({ userId: req.user.sub, role: req.user.role, action: "ADMIN_CONNECTOR_SAGE_UPDATE", entityType: "connector_settings", entityId: "sage_portal", ip: req.ip });
     await sageScheduler.startSageScheduler().catch((error) => {
-      console.error("[SAGE SCHEDULER] redémarrage impossible :", error.message);
+      sageLogger.error("Redémarrage du planificateur Sage impossible", { error });
     });
     res.json({ success: true, config: sanitizeConnectorConfig(nextConfig), enabled: Boolean(enabled) });
   } catch (error) {
@@ -3585,16 +4167,38 @@ app.post("/api/agent/status", agentRequired, async (req, res) => {
   res.json({ success: true });
 });
 
+const { createAdminLogsRouter } = require("./routes/adminLogs");
+app.use("/api/admin/logs", createAdminLogsRouter(authRequired, requireAdmin));
+
 // Middleware d'erreur global — attrape toute erreur async non gérée (Express 5 forward auto)
 // et renvoie une réponse JSON propre. Évite les pages HTML d'erreur par défaut qui cassent api.js.
 app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
-  console.error("[unhandled]", req.method, req.path, "-", err.message);
+  apiLogger.error(logMessages.system.unhandledHttp({ method: req.method, path: req.path }), {
+    error: err,
+    method: req.method,
+    url: req.originalUrl,
+    userId: req.user?.sub || null,
+    ip: req.ip,
+  });
   res.status(err.statusCode || 500).json({
     error: err.message || "Erreur serveur",
   });
 });
 
+process.on("uncaughtException", (error) => {
+  systemLogger.critical(logMessages.system.uncaught(), { error });
+});
+
+process.on("unhandledRejection", (reason) => {
+  const error = reason instanceof Error ? reason : new Error(String(reason));
+  systemLogger.critical(logMessages.system.unhandled(), { error });
+});
+
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Toulemonde client portal backend running on http://localhost:${PORT}`);
+  systemLogger.info(logMessages.system.serverStarted({
+    port: PORT,
+    env: process.env.NODE_ENV || "development",
+    dbType: "postgres",
+  }));
 });

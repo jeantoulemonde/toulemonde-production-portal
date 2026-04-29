@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router";
-import { Building2, ClipboardList, Gauge, LogOut, Package, ScrollText, Settings, Users } from "lucide-react";
+import { Activity, Building2, ClipboardList, Gauge, LogOut, Mail, Package, ScrollText, Settings, Users } from "lucide-react";
 import logoMarkWhite from "../assets/M-DEFONCE.png";
 import { clearSession } from "../auth/session";
 import { api } from "../api/api";
@@ -17,6 +17,8 @@ import AdminOrderDetail from "../pages/admin/AdminOrderDetail";
 import AdminConnectorSage from "../pages/admin/AdminConnectorSage";
 import AdminSyncLogs from "../pages/admin/AdminSyncLogs";
 import AdminCatalog from "../pages/admin/AdminCatalog";
+import AdminMailTemplates from "../pages/admin/AdminMailTemplates";
+import AdminLogs from "../pages/admin/AdminLogs";
 
 function AdminLayout() {
   const navigate = useNavigate();
@@ -57,6 +59,8 @@ function AdminLayout() {
             <AdminNavItem to="/admin/users" label="Utilisateurs" icon={Users} />
             <AdminNavItem to="/admin/orders" label="Commandes" icon={ClipboardList} badge={pendingCount} />
             <AdminNavItem to="/admin/catalog" label="Catalogue mercerie" icon={Package} />
+            <AdminNavItem to="/admin/mail-templates" label="Templates email" icon={Mail} />
+            <AdminNavItem to="/admin/logs" label="Activité du portail" icon={Activity} />
             <AdminNavItem to="/admin/connector-sage" label="Connecteur Sage" icon={Settings} />
             <AdminNavItem to="/admin/sync-logs" label="Logs de synchronisation" icon={ScrollText} />
           </nav>
@@ -75,6 +79,8 @@ function AdminLayout() {
           <Route path="orders" element={<AdminOrders onPendingCountChange={loadPendingCount} />} />
           <Route path="orders/:id" element={<AdminOrderDetail />} />
           <Route path="catalog" element={<AdminCatalog />} />
+          <Route path="mail-templates" element={<AdminMailTemplates />} />
+          <Route path="logs" element={<AdminLogs />} />
           <Route path="connector-sage" element={<AdminConnectorSage />} />
           <Route path="sync-logs" element={<AdminSyncLogs />} />
           <Route path="*" element={<Navigate to="/admin" replace />} />

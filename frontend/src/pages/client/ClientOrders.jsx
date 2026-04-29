@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { styles } from "../../styles";
 import { api } from "../../api/api";
 import ClientOrdersTable from "../../components/ClientOrdersTable";
@@ -8,8 +8,9 @@ import PageContainer from "../../components/PageContainer";
 
 function ClientOrders() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [orders, setOrders] = useState(null);
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState(location.state?.successMessage || "");
   const [error, setError] = useState("");
 
   async function loadOrders() {

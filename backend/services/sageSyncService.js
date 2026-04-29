@@ -1,3 +1,6 @@
+const { sageLogger } = require("./loggerCategories");
+const logMessages = require("./logMessages");
+
 function createSageSyncService({ run, get, insertSyncLog, syncSageInboundStatuses, processPendingSageActions }) {
   // Lot B : un agent est considéré "vivant" si un heartbeat a été reçu il y a < 60s.
   // Quand l'agent leon est actif, le scheduler interne se met en veille pour l'export
@@ -31,7 +34,7 @@ function createSageSyncService({ run, get, insertSyncLog, syncSageInboundStatuse
         [error.message]
       ).catch(() => {});
       await insertSyncLog("SAGE_PORTAL", "sage_to_website", "error", error.message);
-      console.error("Sage import error:", error.message);
+      sageLogger.error(logMessages.sage.importFailed({}), { error });
       throw error;
     }
   }
@@ -53,7 +56,7 @@ function createSageSyncService({ run, get, insertSyncLog, syncSageInboundStatuse
         [error.message]
       ).catch(() => {});
       await insertSyncLog("SAGE_PORTAL", "website_to_sage", "error", error.message);
-      console.error("Sage export error:", error.message);
+      sageLogger.error(logMessages.sage.exportFailed(), { error });
       throw error;
     }
   }

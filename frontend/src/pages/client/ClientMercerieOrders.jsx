@@ -56,6 +56,11 @@ function ClientMercerieOrders() {
               status: statusLabels[order.status] || order.status,
               order_total: Number(order.order_total || 0).toFixed(2),
             }))}
+            actions={(order) => (
+              <button style={styles.linkButton} onClick={() => navigate(`/client/mercerie/orders/${order.id}`)}>
+                Détail
+              </button>
+            )}
           />
         )}
       </section>

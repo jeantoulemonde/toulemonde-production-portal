@@ -393,7 +393,35 @@ CREATE TABLE IF NOT EXISTS catalog_order_lines (
 );
 
 -- =====================================================================
--- 5. INDEXES
+-- 5. EMAILS TRANSACTIONNELS
+-- =====================================================================
+
+CREATE TABLE IF NOT EXISTS mail_templates (
+  id            SERIAL PRIMARY KEY,
+  template_key  TEXT UNIQUE NOT NULL,
+  label         TEXT NOT NULL,
+  subject       TEXT NOT NULL,
+  html_body     TEXT NOT NULL,
+  text_body     TEXT,
+  variables     TEXT,
+  is_active     SMALLINT DEFAULT 1,
+  updated_at    TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+  updated_by    INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS mail_logs (
+  id             SERIAL PRIMARY KEY,
+  template_key   TEXT,
+  recipient      TEXT NOT NULL,
+  subject        TEXT,
+  status         TEXT NOT NULL,
+  error_message  TEXT,
+  order_id       INTEGER,
+  created_at     TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+-- =====================================================================
+-- 6. INDEXES
 -- =====================================================================
 
 -- Repris à l'identique de la base SQLite (9 indexes utilisés en runtime)
@@ -437,8 +465,14 @@ CREATE INDEX IF NOT EXISTS idx_portal_orders_client_id
 CREATE INDEX IF NOT EXISTS idx_portal_users_client_id
   ON portal_users(client_id);
 
+-- mail_logs (Lot mail)
+CREATE INDEX IF NOT EXISTS idx_mail_logs_recipient ON mail_logs(recipient);
+CREATE INDEX IF NOT EXISTS idx_mail_logs_status ON mail_logs(status);
+CREATE INDEX IF NOT EXISTS idx_mail_logs_template_key ON mail_logs(template_key);
+CREATE INDEX IF NOT EXISTS idx_mail_logs_created_at ON mail_logs(created_at DESC);
+
 -- =====================================================================
--- 6. MIGRATIONS IDEMPOTENTES (pour bases déjà créées par une version antérieure)
+-- 7. MIGRATIONS IDEMPOTENTES (pour bases déjà créées par une version antérieure)
 -- =====================================================================
 
 -- Modules accessibles par client (yarn industriel / mercerie). Cf. README_postgres.md.

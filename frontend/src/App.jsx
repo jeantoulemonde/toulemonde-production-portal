@@ -5,6 +5,18 @@ import Login from "./pages/auth/Login";
 import ForgotPassword from "./pages/auth/ForgotPassword";
 import ResetPassword from "./pages/auth/ResetPassword";
 import { ClientProtectedRoute, AdminProtectedRoute } from "./auth/ProtectedRoutes";
+import { reportError } from "./utils/errorReporter";
+
+if (typeof window !== "undefined" && !window.__leonErrorHandlersInstalled) {
+  window.__leonErrorHandlersInstalled = true;
+  window.addEventListener("error", (e) => {
+    reportError(e.error || new Error(e.message), { src: e.filename, line: e.lineno, col: e.colno });
+  });
+  window.addEventListener("unhandledrejection", (e) => {
+    const reason = e.reason instanceof Error ? e.reason : new Error(String(e.reason));
+    reportError(reason, { type: "unhandledrejection" });
+  });
+}
 
 export default function App() {
   return (

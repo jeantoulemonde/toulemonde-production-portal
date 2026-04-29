@@ -65,7 +65,11 @@ function AdminClientDetail() {
       const user = linkedUser;
       if (!user) return setMessage("Aucun utilisateur client lié.");
       const result = await api(`/api/admin/users/${user.id}/reset-password`, { method: "POST" });
-      setMessage(`Lien de réinitialisation : ${result.resetLink}`);
+      setMessage(
+        result.resetLink
+          ? `Lien de réinitialisation (dev) : ${result.resetLink}`
+          : `Email de réinitialisation envoyé à ${result.sentTo || user.email}.`
+      );
     } catch (err) {
       setError(err.message);
     }
@@ -104,7 +108,11 @@ function AdminClientDetail() {
           client_id: client.id,
         }),
       });
-      setMessage(`Utilisateur créé. Invitation : ${result.invitationLink}`);
+      setMessage(
+        result.invitationLink
+          ? `Utilisateur créé. Lien d'invitation (dev) : ${result.invitationLink}`
+          : `Utilisateur créé. Invitation envoyée à ${result.invitedEmail || email}.`
+      );
       await load();
     } catch (err) {
       setError(err.message);

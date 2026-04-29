@@ -16,6 +16,7 @@ import ClientContact from "../pages/client/ClientContact";
 import ClientMercerieCatalog from "../pages/client/ClientMercerieCatalog";
 import ClientMercerieCart from "../pages/client/ClientMercerieCart";
 import ClientMercerieOrders from "../pages/client/ClientMercerieOrders";
+import ClientMercerieOrderDetail from "../pages/client/ClientMercerieOrderDetail";
 import ClientMercerieProductDetail from "../pages/client/ClientMercerieProductDetail";
 
 function ClientLayout() {
@@ -141,6 +142,7 @@ function ClientLayout() {
                 <Route path="mercerie/products/:id" element={<ClientMercerieProductDetail />} />
                 <Route path="mercerie/cart" element={<ClientMercerieCart />} />
                 <Route path="mercerie/orders" element={<ClientMercerieOrders />} />
+                <Route path="mercerie/orders/:id" element={<ClientMercerieOrderDetail />} />
               </>
             )}
             <Route path="documents" element={<ClientDocuments />} />

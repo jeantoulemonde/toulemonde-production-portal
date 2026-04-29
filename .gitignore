@@ -12,3 +12,5 @@ backend/data/
 
 # Logs locaux
 *.log
+*.log.gz
+backend/logs/

@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import { Factory, ShoppingBag } from "lucide-react";
 import atelierBobines from "../../assets/atelier-bobines.png";
 import atelierMatiere from "../../assets/atelier-matiere.png";
 import { api } from "../../api/api";
@@ -94,8 +93,9 @@ function NewYarnOrder() {
   const [searchParams] = useSearchParams();
   const isMobile = useIsMobile(1100);
   const draftId = searchParams.get("draftId");
-  const initialType = draftId || searchParams.get("type") === "technical" ? "technical" : null;
-  const [flowType, setFlowType] = useState(initialType);
+  // La page « Nouvelle demande » est strictement yarn industriel (la mercerie a sa propre nav).
+  // L'ancien écran de choix yarn/mercerie a été retiré.
+  const [flowType] = useState("technical");
   const [step, setStep] = useState(0);
   const [lineStep, setLineStep] = useState(0);
   const [request, setRequest] = useState(initialRequest);
@@ -120,7 +120,9 @@ function NewYarnOrder() {
     setDraftLoaded(false);
     api(`/api/client/orders/${draftId}`)
       .then((data) => {
-        if (data.order?.status !== "draft") {
+        // Bug #9 : on accepte aussi pending_validation (correction demandée par admin).
+        const editable = ["draft", "pending_validation"].includes(data.order?.status);
+        if (!editable) {
           setErrors({ submit: "Cette demande a déjà été soumise et ne peut plus être modifiée." });
           return;
         }
@@ -358,8 +360,15 @@ function NewYarnOrder() {
         method: draftOrderId ? "PUT" : "POST",
         body: JSON.stringify(payload),
       });
-      setSuccess("Votre demande de commande a bien été transmise à Toulemonde Production.");
-      setTimeout(() => navigate("/client/orders"), 800);
+      // Bug #3 : nettoyage de l'état local + redirection immédiate avec state pour message succès.
+      setLines([]);
+      setRequest(initialRequest);
+      setLineDraft(initialLine);
+      setDraftOrderId(null);
+      navigate("/client/orders", {
+        replace: true,
+        state: { successMessage: "Votre demande de commande a bien été transmise à Toulemonde Production." },
+      });
     } catch (err) {
       setErrors({ submit: err.message });
     } finally {
@@ -413,37 +422,6 @@ function NewYarnOrder() {
     ["Date souhaitée", request.requested_delivery_date],
     ["Urgence", request.urgent ? "Oui" : "Non"],
   ];
-
-  if (!flowType) {
-    return (
-      <PageContainer>
-        <PageHeader
-          kicker="Portail client"
-          title="Nouvelle demande de commande"
-          subtitle="Choisissez le type de demande que vous souhaitez créer."
-        />
-        <section style={local.choiceGrid}>
-          <ChoiceCard
-            icon={Factory}
-            title="Demande industrielle"
-            text="Configurez une demande technique de fil sur mesure avec une ou plusieurs lignes."
-            buttonLabel="Créer une demande industrielle"
-            onClick={() => {
-              setFlowType("technical");
-              navigate("/client/orders/new?type=technical", { replace: true });
-            }}
-          />
-          <ChoiceCard
-            icon={ShoppingBag}
-            title="Mercerie"
-            text="Commandez des articles standards depuis le catalogue."
-            buttonLabel="Commander en mercerie"
-            onClick={() => navigate("/client/mercerie")}
-          />
-        </section>
-      </PageContainer>
-    );
-  }
 
   return (
     <PageContainer as="form" onSubmit={submit}>
@@ -565,19 +543,6 @@ function NewYarnOrder() {
         />
       )}
     </PageContainer>
-  );
-}
-
-function ChoiceCard({ icon: Icon, title, text, buttonLabel, onClick }) {
-  return (
-    <article style={local.choiceCard}>
-      <div style={local.choiceIcon}><Icon size={28} /></div>
-      <div>
-        <h2 style={local.choiceTitle}>{title}</h2>
-        <p style={local.choiceText}>{text}</p>
-      </div>
-      <button type="button" style={local.choiceButton} onClick={onClick}>{buttonLabel}</button>
-    </article>
   );
 }
 

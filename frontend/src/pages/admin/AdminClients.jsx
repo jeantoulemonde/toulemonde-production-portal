@@ -58,7 +58,13 @@ function AdminClients() {
           },
         }),
       });
-      setMessage(data.invitationLink ? `Client créé. Invitation : ${data.invitationLink}` : "Client créé.");
+      setMessage(
+        data.invitationLink
+          ? `Client créé. Lien d'invitation (dev) : ${data.invitationLink}`
+          : data.invitedEmail
+            ? `Client créé. Invitation envoyée à ${data.invitedEmail}.`
+            : "Client créé."
+      );
       setFormOpen(false);
       setForm(EMPTY_FORM);
       await loadClients();

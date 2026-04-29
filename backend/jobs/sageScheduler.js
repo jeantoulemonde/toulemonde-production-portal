@@ -1,3 +1,6 @@
+const { sageLogger } = require("../services/loggerCategories");
+const logMessages = require("../services/logMessages");
+
 function toIntervalMs(value) {
   const seconds = Number(value || 60);
   return Math.max(seconds, 10) * 1000;
@@ -18,10 +21,22 @@ function createSageScheduler({ getConnectorConfig, runSageImport, runSageExport 
     if (config.inbound?.enabled !== false) {
       if (!importRunning) {
         importRunning = true;
+        const startedAt = Date.now();
+        sageLogger.debug(logMessages.sage.importStarted({ trigger: "scheduler" }), { trigger: "scheduler" });
         try {
-          await runSageImport();
+          const result = await runSageImport();
+          sageLogger.info(logMessages.sage.importDone({
+            ordersUpdated: result?.ordersUpdated || result?.processed || 0,
+            duration: Date.now() - startedAt,
+          }), {
+            duration: Date.now() - startedAt,
+            ordersUpdated: result?.ordersUpdated || result?.processed || 0,
+          });
         } catch (error) {
-          console.error("[SAGE SCHEDULER] erreur import :", error.message);
+          sageLogger.error(logMessages.sage.importFailed({ duration: Date.now() - startedAt }), {
+            error,
+            duration: Date.now() - startedAt,
+          });
         } finally {
           importRunning = false;
         }
@@ -34,7 +49,7 @@ function createSageScheduler({ getConnectorConfig, runSageImport, runSageExport 
         try {
           await runSageExport();
         } catch (error) {
-          console.error("[SAGE SCHEDULER] erreur export :", error.message);
+          sageLogger.error(logMessages.sage.exportFailed(), { error });
         } finally {
           exportRunning = false;
         }
@@ -52,7 +67,7 @@ function createSageScheduler({ getConnectorConfig, runSageImport, runSageExport 
     const config = connector.config || {};
 
     if (!connector.enabled) {
-      console.log("[SAGE SCHEDULER] non démarré : connecteur désactivé");
+      sageLogger.info(logMessages.sage.schedulerSkipped({ reason: "connecteur désactivé" }));
       return;
     }
 
@@ -60,7 +75,7 @@ function createSageScheduler({ getConnectorConfig, runSageImport, runSageExport 
     const exportEnabled = config.outbound?.enabled === true;
 
     if (!importEnabled && !exportEnabled) {
-      console.log("[SAGE SCHEDULER] non démarré : import/export désactivés");
+      sageLogger.info(logMessages.sage.schedulerSkipped({ reason: "import et export désactivés" }));
       return;
     }
 
@@ -68,16 +83,16 @@ function createSageScheduler({ getConnectorConfig, runSageImport, runSageExport 
     if (importEnabled) activeIntervals.push(Number(config.inbound?.intervalSeconds || 60));
     if (exportEnabled) activeIntervals.push(Number(config.outbound?.intervalSeconds || 60));
     const frequencyMs = toIntervalMs(Math.min(...activeIntervals));
-    console.log(`[SAGE SCHEDULER] démarré toutes les ${frequencyMs / 1000}s`);
+    sageLogger.info(logMessages.sage.schedulerStarted({ frequencyMs }), { frequencyMs });
 
     timer = setInterval(() => {
       runAutomaticSync().catch((error) => {
-        console.error("[SAGE SCHEDULER] erreur globale :", error.message);
+        sageLogger.error(logMessages.sage.schedulerError(), { error });
       });
     }, frequencyMs);
 
     runAutomaticSync().catch((error) => {
-      console.error("[SAGE SCHEDULER] erreur initiale :", error.message);
+      sageLogger.error(logMessages.sage.schedulerError(), { error, phase: "initial" });
     });
   }
 

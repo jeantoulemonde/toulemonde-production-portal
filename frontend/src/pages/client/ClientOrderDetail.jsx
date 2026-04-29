@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import { api } from "../../api/api";
 import PageHeader from "../../components/PageHeader";
 import PageContainer from "../../components/PageContainer";
 import { styles } from "../../styles";
+import { T } from "../../theme";
 import { clientStatus, formatDate } from "../../utils/formatters";
 
 function ClientOrderDetail() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
 
@@ -52,6 +54,47 @@ function ClientOrderDetail() {
         title={order.order_number || "Détail demande"}
         subtitle="Résumé métier de votre demande de production."
       />
+
+      {order.status === "pending_validation" && (
+        <section style={{
+          background: "rgba(255,193,7,0.10)",
+          border: `1px solid rgba(255,193,7,0.45)`,
+          borderRadius: 14,
+          padding: 16,
+          display: "grid",
+          gap: 8,
+        }}>
+          <strong style={{ color: T.noir }}>⚠ Correction demandée</strong>
+          <p style={{ ...styles.muted, margin: 0 }}>
+            Toulemonde Production a demandé une correction sur cette demande
+            {order.internal_comment ? ` : « ${order.internal_comment} »` : "."}
+            Modifiez votre demande puis soumettez-la à nouveau.
+          </p>
+          <div>
+            <button
+              type="button"
+              style={styles.primaryButton}
+              onClick={() => navigate(`/client/orders/new?draftId=${order.id}`)}
+            >
+              Modifier la demande
+            </button>
+          </div>
+        </section>
+      )}
+
+      {order.status === "rejected" && (
+        <section style={{
+          background: "rgba(159,29,29,0.08)",
+          border: `1px solid rgba(159,29,29,0.30)`,
+          borderRadius: 14,
+          padding: 16,
+        }}>
+          <strong style={{ color: T.danger }}>Demande refusée</strong>
+          {order.internal_comment && (
+            <p style={{ ...styles.muted, marginTop: 8 }}>{order.internal_comment}</p>
+          )}
+        </section>
+      )}
 
       <section style={styles.cardWide}>
         <h2 style={styles.cardTitle}>Résumé de la demande</h2>

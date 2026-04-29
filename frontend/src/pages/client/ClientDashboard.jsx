@@ -34,9 +34,17 @@ function ClientDashboard() {
   const recentDrafts = drafts.slice(0, 3);
   const submitted = orders.filter((order) => ["submitted", "pending_approval"].includes(order.status));
   const pendingValidation = orders.filter((order) => order.status === "pending_validation");
-  const inProduction = orders.filter((order) => ["approved", "in_production"].includes(order.status));
+  // Bug #8 : "En production" couvre désormais tout ce qui est validé jusqu'à prêt à livrer.
+  const inProduction = orders.filter((order) => [
+    "approved",
+    "pending_sage_sync",
+    "sent_to_sage",
+    "imported_to_leon",
+    "in_production",
+    "ready",
+  ].includes(order.status));
   const ongoingOrders = orders
-    .filter((order) => !["draft", "delivered", "cancelled"].includes(order.status))
+    .filter((order) => !["draft", "delivered", "cancelled", "rejected"].includes(order.status))
     .slice(0, 5);
   const latestOrders = orders.filter((order) => order.status !== "draft").slice(0, 3);
 
