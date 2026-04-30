@@ -55,12 +55,16 @@ export function useChat({ enabled = true } = {}) {
 
     const userTmpId = `user-tmp-${Date.now()}`;
     const assistantTmpId = `asst-tmp-${Date.now()}`;
+    // _key est la clé React stable du message à travers ses renders : elle
+    // ne change pas quand on swap l'id temporaire pour l'id serveur, donc
+    // React conserve le DOM existant et l'animation d'apparition ne rejoue
+    // pas (sinon : flash visuel à chaque arrivée du done event).
     const userOptimistic = {
-      id: userTmpId, role: "user", content: trimmed,
+      id: userTmpId, _key: userTmpId, role: "user", content: trimmed,
       created_at: new Date().toISOString(),
     };
     const assistantPending = {
-      id: assistantTmpId, role: "assistant", content: "",
+      id: assistantTmpId, _key: assistantTmpId, role: "assistant", content: "",
       created_at: new Date().toISOString(), pending: true,
     };
     setMessages((prev) => [...prev, userOptimistic, assistantPending]);
@@ -153,12 +157,14 @@ export function useChat({ enabled = true } = {}) {
     if (finalSession) setSession(finalSession);
     if (finalAssistant) {
       setMessages((prev) => prev.map((m) =>
-        m.id === assistantTmpId
+        m._key === assistantTmpId
           ? {
+              ...m, // préserve _key
               id: finalAssistant.id,
               role: "assistant",
               content: finalAssistant.content,
               created_at: finalAssistant.created_at,
+              pending: false,
               ...(finalAssistant.citations ? { citations: finalAssistant.citations } : {}),
             }
           : m

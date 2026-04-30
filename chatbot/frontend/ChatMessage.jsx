@@ -92,34 +92,47 @@ function FeedbackRow({ message, onFeedback }) {
 
 function ChatMessage({ message, onFeedback }) {
   const role = message.role || "assistant";
+
   if (role === "system") {
     return (
-      <div style={chatStyles.messageSystem}>
+      <div style={{ ...chatStyles.messageSystem, animation: "leon-msg-fade 240ms ease-out" }}>
         {message.content}
       </div>
     );
   }
-  const baseStyle = role === "user"
-    ? { ...chatStyles.messageBase, ...chatStyles.messageUser }
-    : role === "admin"
-      ? { ...chatStyles.messageBase, ...chatStyles.messageAdmin }
-      : { ...chatStyles.messageBase, ...chatStyles.messageAssistant };
 
-  const metaStyle = role === "user" ? chatStyles.messageMetaLight : chatStyles.messageMeta;
-  const senderLabel = role === "admin"
-    ? "Conseiller"
-    : role === "assistant"
-      ? "Assistant"
-      : null;
+  const isUser = role === "user";
+  const isAssistant = role === "assistant";
+  const isAdmin = role === "admin";
+
+  // baseStyle conserve son look mais l'alignSelf et le maxWidth sont déplacés
+  // sur le wrapper messageGroup pour que l'animation s'applique au groupe entier
+  // (bulle + citations + thumbs).
+  const baseStyle = {
+    ...(isUser ? { ...chatStyles.messageBase, ...chatStyles.messageUser }
+       : isAdmin ? { ...chatStyles.messageBase, ...chatStyles.messageAdmin }
+       : { ...chatStyles.messageBase, ...chatStyles.messageAssistant }),
+    alignSelf: undefined,
+    maxWidth: "100%",
+  };
+
+  const metaStyle = isUser ? chatStyles.messageMetaLight : chatStyles.messageMeta;
+  const senderLabel = isAdmin ? "Conseiller" : isAssistant ? "Assistant" : null;
 
   // Pendant le streaming, le placeholder assistant a `pending: true` et
   // `content: ""` jusqu'au 1er token. On rend le TypingIndicator dans la
   // bulle existante au lieu du contenu — dès le 1er token, content devient
   // non-vide et le rendu bascule sur renderContent (même bulle, swap propre).
-  const isTyping = role === "assistant" && message.pending && !message.content;
+  const isTyping = isAssistant && message.pending && !message.content;
+
+  const groupStyle = {
+    ...chatStyles.messageGroup,
+    alignSelf: isUser ? "flex-end" : "flex-start",
+    alignItems: isUser ? "flex-end" : "flex-start",
+  };
 
   return (
-    <>
+    <div style={groupStyle}>
       <div style={baseStyle}>
         {senderLabel && <div style={{ ...metaStyle, marginTop: 0, marginBottom: 4, fontWeight: 700 }}>{senderLabel}</div>}
         {isTyping ? <TypingIndicator /> : renderContent(message.content)}
@@ -127,9 +140,9 @@ function ChatMessage({ message, onFeedback }) {
           <div style={metaStyle}>{formatTime(message.created_at)}</div>
         )}
       </div>
-      {role === "assistant" && !isTyping && <CitationsRow citations={message.citations} />}
-      {role === "assistant" && !isTyping && <FeedbackRow message={message} onFeedback={onFeedback} />}
-    </>
+      {isAssistant && !isTyping && <CitationsRow citations={message.citations} />}
+      {isAssistant && !isTyping && <FeedbackRow message={message} onFeedback={onFeedback} />}
+    </div>
   );
 }
 

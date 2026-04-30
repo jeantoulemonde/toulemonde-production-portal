@@ -87,8 +87,20 @@ export const chatStyles = {
     padding: "16px 14px",
     display: "flex",
     flexDirection: "column",
-    gap: 10,
+    gap: 18,
     background: T.ecru,
+  },
+
+  // Wrapper d'un "groupe message" (bulle + citations + thumbs comme une unité).
+  // alignItems / alignSelf ajustés inline selon role. L'animation joue une
+  // fois au mount du groupe puis ne rejoue plus tant que la clé React reste
+  // stable (cf. _key dans useChat).
+  messageGroup: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+    maxWidth: "85%",
+    animation: "leon-msg-fade 240ms ease-out",
   },
   messageBase: {
     maxWidth: "85%",
@@ -403,3 +415,28 @@ export const chatStyles = {
     borderColor: T.noir,
   },
 };
+
+// ─── Keyframes globales ────────────────────────────────────────────────────
+// Les styles inline JS ne supportent pas @keyframes, on injecte un <style>
+// dans le <head> au premier appel à ensureKeyframes() (idempotent).
+
+const KEYFRAMES = `
+@keyframes leon-msg-fade {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes leon-text-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+`;
+
+let injected = false;
+export function ensureKeyframes() {
+  if (injected || typeof document === "undefined") return;
+  injected = true;
+  const style = document.createElement("style");
+  style.dataset.leonKeyframes = "true";
+  style.textContent = KEYFRAMES;
+  document.head.appendChild(style);
+}

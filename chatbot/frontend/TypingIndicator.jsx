@@ -11,11 +11,12 @@ import { T } from "../../frontend/src/theme";
 
 // Cycle progressif de messages pour rassurer pendant que Léon réfléchit.
 // `until` = ms écoulées depuis le mount, exclusif (le 1er match l'emporte).
+// Chaque phase dure 3 s.
 const PHASES = [
-  { until: 1000,        text: "Léon écrit…" },
-  { until: 3000,        text: "Léon regarde ça…" },
-  { until: 6000,        text: "Léon prépare la meilleure réponse possible…" },
-  { until: 10000,       text: "Encore un instant, Léon finalise sa réponse 🙂" },
+  { until: 3000,        text: "Léon écrit…" },
+  { until: 6000,        text: "Léon regarde ça…" },
+  { until: 9000,        text: "Léon prépare la meilleure réponse possible…" },
+  { until: 12000,       text: "Encore un instant, Léon finalise sa réponse 🙂" },
   { until: Infinity,    text: "Merci de patienter, Léon termine l'analyse." },
 ];
 
@@ -198,12 +199,19 @@ function TypingIndicator() {
         style={{ width: 28, height: 32, display: "block", flexShrink: 0 }}
         aria-hidden="true"
       />
-      <span style={{
-        fontFamily: T.fontDisplay,
-        fontSize: 12,
-        fontStyle: "italic",
-        color: T.textSoft,
-      }}>
+      {/* key={text} → React remonte le span à chaque changement de phase,
+          ce qui rejoue l'animation CSS de fade-up sur le nouveau texte. */}
+      <span
+        key={text}
+        style={{
+          fontFamily: T.fontDisplay,
+          fontSize: 12,
+          fontStyle: "italic",
+          color: T.textSoft,
+          animation: "leon-text-fade 280ms ease-out",
+          display: "inline-block",
+        }}
+      >
         {text}
       </span>
     </div>

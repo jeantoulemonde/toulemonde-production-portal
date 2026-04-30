@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router";
 import { X, Send, Square, UserPlus } from "lucide-react";
-import { chatStyles } from "./chatStyles";
+import { chatStyles, ensureKeyframes } from "./chatStyles";
 import { useChat } from "./useChat";
 import ChatMessage from "./ChatMessage";
 import ChatIcon from "./ChatIcon";
@@ -33,6 +33,8 @@ function ChatBubbleClient() {
   const messagesRef = useRef(null);
 
   const { session, messages, sending, error, send, escalate, abort, sendFeedback } = useChat({ enabled: open });
+
+  useEffect(() => { ensureKeyframes(); }, []);
 
   useEffect(() => {
     if (messagesRef.current) {
@@ -106,7 +108,7 @@ function ChatBubbleClient() {
                 Comment puis-je vous aider ?
               </div>
             )}
-            {messages.map((m) => <ChatMessage key={m.id} message={m} onFeedback={sendFeedback} />)}
+            {messages.map((m) => <ChatMessage key={m._key || m.id} message={m} onFeedback={sendFeedback} />)}
           </div>
 
           {error && <div style={chatStyles.errorBanner}>{error}</div>}
