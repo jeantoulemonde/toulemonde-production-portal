@@ -10,6 +10,7 @@ const crypto = require("crypto");
 const { Pool } = require("pg");
 const { createSageSyncService } = require("./services/sageSyncService");
 const { createSageScheduler } = require("./jobs/sageScheduler");
+const { createCleanupScheduler } = require("./jobs/cleanupScheduler");
 const { createMailService } = require("./services/mailService");
 const { MAIL_TEMPLATES } = require("./services/mailTemplateSeeds");
 const { getVariables, getSampleData } = require("./services/mailVariables");
@@ -48,6 +49,13 @@ const portalPool = new Pool({
   user: process.env.POSTGRES_USER,
   password: process.env.POSTGRES_PASSWORD,
   ssl: process.env.POSTGRES_SSL === "true" ? { rejectUnauthorized: false } : false,
+  // Tuning prod : sans ces overrides, pg.Pool plafonne à 10 connexions et
+  // attend indéfiniment si la file est saturée (Sage scheduler + Resend
+  // fire-and-forget + traffic admin = starvation possible au-delà de ~30
+  // utilisateurs concurrents).
+  max: Number(process.env.POSTGRES_POOL_MAX || 25),
+  idleTimeoutMillis: Number(process.env.POSTGRES_POOL_IDLE_MS || 30000),
+  connectionTimeoutMillis: Number(process.env.POSTGRES_POOL_CONNECT_MS || 5000),
 });
 
 portalPool.on("error", (err) => {
@@ -1086,19 +1094,35 @@ async function syncSageInboundStatuses() {
     `
   );
   const results = [];
+  if (orders.length === 0) {
+    return { checked: 0, updated: 0, results };
+  }
+
+  // Batch SELECT côté Sage : 1 round-trip pour N orders au lieu de N round-trips.
+  // Sur 100 orders + ~50 ms par appel Sage, on passe de ~5 s à ~200 ms.
+  // La sémantique try/catch par order est préservée en faisant la lookup en
+  // mémoire après ce batch.
+  const sageNumbers = orders.map((o) => o.sage_order_number);
+  const sageByPiece = new Map();
 
   await withSagePool(async (pool) => {
+    const placeholders = sageNumbers.map((_, i) => `$${i + 1}`).join(",");
+    const sageResult = await pool.query(
+      `
+        SELECT "DO_Piece", "DO_Statut", "DO_TotalHT", "DO_TotalTTC", "DO_DateLivr", "DO_Ref"
+        FROM "F_DOCENTETE"
+        WHERE "DO_Piece" IN (${placeholders})
+      `,
+      sageNumbers
+    );
+    for (const row of sageResult.rows) {
+      const key = String(row.DO_Piece ?? row.do_piece ?? "");
+      if (key) sageByPiece.set(key, row);
+    }
+
     for (const order of orders) {
       try {
-        const sage = await pool.query(
-          `
-            SELECT "DO_Piece", "DO_Statut", "DO_TotalHT", "DO_TotalTTC", "DO_DateLivr", "DO_Ref"
-            FROM "F_DOCENTETE"
-            WHERE "DO_Piece" = $1
-          `,
-          [order.sage_order_number]
-        );
-        const row = sage.rows[0];
+        const row = sageByPiece.get(String(order.sage_order_number));
         if (!row) {
           results.push({ orderId: order.id, updated: false, reason: "Commande absente de SageSimu" });
           continue;
@@ -1320,11 +1344,14 @@ async function seedMailTemplates() {
   }
 }
 
+const cleanupScheduler = createCleanupScheduler({ pool: portalPool });
+
 initDb()
   .then(() => {
     systemLogger.info(logMessages.system.dbConnected({ db: process.env.POSTGRES_DB }));
     checkMailConfiguration();
     sageScheduler.startSageScheduler();
+    cleanupScheduler.start();
   })
   .catch((error) => {
     systemLogger.critical(logMessages.system.dbInitFailed(), { error });
