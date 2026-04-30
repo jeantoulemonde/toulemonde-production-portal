@@ -4197,16 +4197,6 @@ app.post("/api/agent/status", agentRequired, async (req, res) => {
 const { createAdminLogsRouter } = require("./routes/adminLogs");
 app.use("/api/admin/logs", createAdminLogsRouter(authRequired, requireAdmin));
 
-// === MODULE CHATBOT (POC, retirable) ===
-// Mount conditionnel des routes /api/chat/*. Pour retirer : supprimer ce bloc.
-// Voir chatbot/README.md → "Procédure de désactivation / retrait".
-if (process.env.CHATBOT_ENABLED === "true") {
-  const chatRoutes = require("../chatbot/backend/chatRoutes");
-  app.use("/api/chat", chatRoutes);
-  systemLogger.info("Module chatbot activé — routes /api/chat/* montées");
-}
-// === FIN MODULE CHATBOT ===
-
 // Middleware d'erreur global — attrape toute erreur async non gérée (Express 5 forward auto)
 // et renvoie une réponse JSON propre. Évite les pages HTML d'erreur par défaut qui cassent api.js.
 app.use((err, req, res, next) => {

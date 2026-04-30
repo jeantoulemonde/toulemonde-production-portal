@@ -6,9 +6,8 @@ import ForgotPassword from "./pages/auth/ForgotPassword";
 import ResetPassword from "./pages/auth/ResetPassword";
 import { ClientProtectedRoute, AdminProtectedRoute } from "./auth/ProtectedRoutes";
 import { reportError } from "./utils/errorReporter";
-// === MODULE CHATBOT (POC, retirable) ===
-import ChatWidget from "../../chatbot/frontend/ChatWidget";
-// === FIN MODULE CHATBOT ===
+// Note : le widget chatbot est désormais un projet séparé (~/toulemonde-chatbot)
+// chargé via <script src="..."> dans index.html. Pas d'import React ici.
 
 if (typeof window !== "undefined" && !window.__leonErrorHandlersInstalled) {
   window.__leonErrorHandlersInstalled = true;
@@ -64,9 +63,6 @@ export default function App() {
         <Route path="/contact" element={<Navigate to="/client/contact" replace />} />
         <Route path="*" element={<Navigate to="/client" replace />} />
       </Routes>
-      {/* === MODULE CHATBOT (POC, retirable) === */}
-      {import.meta.env.VITE_CHATBOT_ENABLED === "true" && <ChatWidget />}
-      {/* === FIN MODULE CHATBOT === */}
     </BrowserRouter>
   );
 }
