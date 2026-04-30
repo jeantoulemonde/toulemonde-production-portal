@@ -6,7 +6,7 @@ services:
   - type: web
     name: toulemonde-portal-backend
     runtime: node
-    plan: starter            # 512 MB RAM — adapter en prod
+    plan: free               # ⚠ s'endort après 15 min idle, 750 h/mois ; upgrade vers starter (7$) en prod réelle
     rootDir: backend
     buildCommand: npm install
     startCommand: npm start
