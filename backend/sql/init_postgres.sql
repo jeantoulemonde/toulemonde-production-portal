@@ -20,6 +20,14 @@
 -- Encodage : la base cible doit être UTF-8 (createdb --encoding=UTF8).
 
 -- =====================================================================
+-- 0. EXTENSIONS
+-- =====================================================================
+-- pgvector : utilisé par le module chatbot (table chat_documents.embedding
+-- vector(1024)). Activé ici pour qu'il soit disponible avant le boot du
+-- service chatbot, qui exécute ses propres migrations en lazy-load.
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- =====================================================================
 -- 1. RACINES
 -- =====================================================================
 
