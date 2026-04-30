@@ -4044,6 +4044,79 @@ app.post("/api/admin/connector-sage/sync-outbound", authRequired, requireRoles("
   }
 });
 
+// ─── Réglage : chatbot ON/OFF ─────────────────────────────────────────────
+// Source de vérité pour l'affichage du widget chatbot sur le portail.
+// Le widget (projet séparé) interroge /api/public/chatbot-config au boot
+// avant de se monter. Cache mémoire 30 s pour absorber le trafic.
+
+const CHATBOT_SETTINGS_KEY = "chatbot";
+let chatbotConfigCache = { value: null, expiresAt: 0 };
+
+async function readChatbotConfig() {
+  const now = Date.now();
+  if (chatbotConfigCache.value && chatbotConfigCache.expiresAt > now) {
+    return chatbotConfigCache.value;
+  }
+  const row = await get(`SELECT value_json, updated_at, updated_by FROM app_settings WHERE key = ?`, [CHATBOT_SETTINGS_KEY]);
+  let parsed = {};
+  try { parsed = row ? JSON.parse(row.value_json || "{}") : {}; } catch { parsed = {}; }
+  // Défaut : chatbot activé tant que l'admin n'a rien décidé.
+  const value = {
+    enabled: parsed.enabled !== false,
+    updated_at: row?.updated_at || null,
+    updated_by: row?.updated_by || null,
+  };
+  chatbotConfigCache = { value, expiresAt: now + 30_000 };
+  return value;
+}
+
+function invalidateChatbotConfigCache() {
+  chatbotConfigCache = { value: null, expiresAt: 0 };
+}
+
+// Public — interrogé par le widget chatbot à chaque boot. Pas d'auth.
+app.get("/api/public/chatbot-config", async (_req, res) => {
+  try {
+    const cfg = await readChatbotConfig();
+    res.json({ enabled: cfg.enabled });
+  } catch {
+    // Fail-open : en cas de pépin DB, on laisse le widget s'afficher.
+    res.json({ enabled: true });
+  }
+});
+
+app.get("/api/admin/chatbot-config", authRequired, requireAdmin, async (_req, res) => {
+  const cfg = await readChatbotConfig();
+  res.json(cfg);
+});
+
+app.put("/api/admin/chatbot-config", authRequired, requireAdmin, async (req, res) => {
+  const enabled = req.body?.enabled === true;
+  try {
+    await run(
+      `
+        INSERT INTO app_settings (key, value_json, updated_at, updated_by)
+        VALUES (?, ?, CURRENT_TIMESTAMP, ?)
+        ON CONFLICT(key) DO UPDATE
+          SET value_json = excluded.value_json,
+              updated_at = CURRENT_TIMESTAMP,
+              updated_by = excluded.updated_by
+      `,
+      [CHATBOT_SETTINGS_KEY, JSON.stringify({ enabled }), req.user.sub || null]
+    );
+    invalidateChatbotConfigCache();
+    await auditLog({
+      userId: req.user.sub, role: req.user.role,
+      action: enabled ? "ADMIN_CHATBOT_ENABLED" : "ADMIN_CHATBOT_DISABLED",
+      entityType: "app_settings", entityId: CHATBOT_SETTINGS_KEY, ip: req.ip,
+    });
+    const cfg = await readChatbotConfig();
+    res.json(cfg);
+  } catch (error) {
+    res.status(500).json({ error: "Erreur sauvegarde du réglage chatbot" });
+  }
+});
+
 app.get("/api/admin/orders", authRequired, requireAdmin, async (req, res) => {
   const orders = await all(
     `

@@ -267,6 +267,15 @@ CREATE TABLE IF NOT EXISTS connector_settings (
   updated_at               TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Table générique de réglages applicatifs (toggles produits, feature flags…).
+-- Première utilisation : key='chatbot' → { enabled: true|false }.
+CREATE TABLE IF NOT EXISTS app_settings (
+  key             TEXT PRIMARY KEY,
+  value_json      TEXT NOT NULL DEFAULT '{}',
+  updated_at      TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+  updated_by      INTEGER
+);
+
 -- =====================================================================
 -- 4. CATALOGUE MERCERIE
 -- =====================================================================

@@ -11,6 +11,7 @@ import PageHeader from "../../components/PageHeader";
 import LoadingState from "../../components/LoadingState";
 import { styles } from "../../styles";
 import { T } from "../../theme";
+import { api } from "../../api/api";
 
 // ─── Configuration ─────────────────────────────────────────────────────────
 
@@ -238,6 +239,110 @@ function useAdminChat() {
   };
 }
 
+// ─── Toggle "Activer / Désactiver le chatbot" ──────────────────────────────
+//
+// Source de vérité : portail backend (table app_settings, key='chatbot').
+// Le widget chatbot interroge /api/public/chatbot-config au boot. Cache 30 s
+// côté serveur → un visiteur déjà chargé verra l'effet à son prochain reload.
+
+function ChatbotToggle() {
+  const [enabled, setEnabled] = useState(null); // null = en chargement
+  const [updatedAt, setUpdatedAt] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    api("/api/admin/chatbot-config")
+      .then((data) => {
+        if (!alive) return;
+        setEnabled(Boolean(data.enabled));
+        setUpdatedAt(data.updated_at || null);
+      })
+      .catch((err) => alive && setError(err.message));
+    return () => { alive = false; };
+  }, []);
+
+  async function handleToggle() {
+    if (saving || enabled === null) return;
+    const next = !enabled;
+    setSaving(true);
+    setError("");
+    try {
+      const data = await api("/api/admin/chatbot-config", {
+        method: "PUT",
+        body: JSON.stringify({ enabled: next }),
+      });
+      setEnabled(Boolean(data.enabled));
+      setUpdatedAt(data.updated_at || null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const trackStyle = {
+    width: 46, height: 26, borderRadius: 999, position: "relative",
+    background: enabled ? T.success || "#1f8a3a" : "#c8c8c8",
+    transition: "background 0.2s ease",
+    cursor: saving || enabled === null ? "wait" : "pointer",
+    opacity: enabled === null ? 0.5 : 1,
+    flexShrink: 0,
+  };
+  const knobStyle = {
+    position: "absolute", top: 3, left: enabled ? 23 : 3,
+    width: 20, height: 20, borderRadius: "50%", background: "#fff",
+    boxShadow: "0 1px 3px rgba(0,0,0,0.25)",
+    transition: "left 0.2s ease",
+  };
+
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", justifyContent: "space-between",
+      gap: 16, padding: "14px 18px", borderRadius: T.radiusL || 14,
+      border: `1px solid ${T.border}`, background: "#fff",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, minWidth: 0 }}>
+        <Power size={18} color={enabled ? (T.success || "#1f8a3a") : T.textSoft} />
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 14, color: T.noir }}>
+            Affichage du chatbot sur le portail
+          </div>
+          <div style={{ fontSize: 12, color: T.textSoft, marginTop: 2 }}>
+            {enabled === null
+              ? "Chargement du réglage…"
+              : enabled
+                ? "Le widget est visible par les visiteurs du portail."
+                : "Le widget est masqué pour tous les visiteurs."}
+            {updatedAt && (
+              <span style={{ marginLeft: 8, color: T.textSoft }}>
+                · Modifié le {new Date(updatedAt).toLocaleString("fr-FR")}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={handleToggle}
+        disabled={saving || enabled === null}
+        aria-label={enabled ? "Désactiver le chatbot" : "Activer le chatbot"}
+        aria-pressed={Boolean(enabled)}
+        title={enabled ? "Désactiver" : "Activer"}
+        style={{ ...trackStyle, border: "none", padding: 0 }}
+      >
+        <span style={knobStyle} />
+      </button>
+      {error && (
+        <div style={{ color: T.danger || "#c00", fontSize: 12, marginLeft: 12 }}>
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Bulle de message (rendu admin simplifié — pas de citations, pas de typing) ───
 
 function AdminChatMessage({ message }) {
@@ -305,6 +410,8 @@ function AdminChatPage() {
           Actualiser
         </button>
       </PageHeader>
+
+      <ChatbotToggle />
 
       {error && <div style={styles.error}>{error}</div>}
 
