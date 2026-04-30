@@ -6,6 +6,7 @@ import { api } from "../../api/api";
 import Field from "../../components/Field";
 import PageContainer from "../../components/PageContainer";
 import PageHeader from "../../components/PageHeader";
+import SectionHeader from "../../components/SectionHeader";
 import Select from "../../components/Select";
 import { styles } from "../../styles";
 import { T } from "../../theme";
@@ -425,6 +426,7 @@ function NewYarnOrder() {
 
   return (
     <PageContainer as="form" onSubmit={submit}>
+      <SectionHeader type="industriel" />
       <PageHeader
         kicker="Portail client"
         title="Nouvelle demande de commande"

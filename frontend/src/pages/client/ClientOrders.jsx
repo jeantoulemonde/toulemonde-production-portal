@@ -5,6 +5,7 @@ import { api } from "../../api/api";
 import ClientOrdersTable from "../../components/ClientOrdersTable";
 import PageHeader from "../../components/PageHeader";
 import PageContainer from "../../components/PageContainer";
+import SectionHeader from "../../components/SectionHeader";
 
 function ClientOrders() {
   const navigate = useNavigate();
@@ -51,6 +52,7 @@ function ClientOrders() {
 
   return (
     <PageContainer>
+      <SectionHeader type="industriel" />
       <PageHeader
         kicker="Portail client"
         title="Mes demandes de fil"

@@ -4,6 +4,7 @@ import { Search, ShoppingCart } from "lucide-react";
 import { api } from "../../api/api";
 import PageContainer from "../../components/PageContainer";
 import PageHeader from "../../components/PageHeader";
+import SectionHeader from "../../components/SectionHeader";
 import { styles } from "../../styles";
 import { T } from "../../theme";
 import { backendAssetUrl } from "../../utils/assets";
@@ -115,6 +116,7 @@ function ClientMercerieCatalog() {
 
   return (
     <PageContainer>
+      <SectionHeader type="mercerie" />
       <PageHeader
         kicker="Portail client"
         title="Mercerie"
@@ -164,7 +166,7 @@ function ClientMercerieCatalog() {
                 <span style={local.sku}>{product.sku}</span>
                 <span style={styles.badge}>{product.category_name || "Mercerie"}</span>
               </div>
-              <button type="button" style={{ ...styles.linkButton, padding: 0, textAlign: "left", justifyContent: "flex-start", textTransform: "none", letterSpacing: 0 }} onClick={() => navigate(`/client/mercerie/products/${product.id}`)}>
+              <button type="button" style={{ ...styles.linkButton, color: T.mercerie, padding: 0, textAlign: "left", justifyContent: "flex-start", textTransform: "none", letterSpacing: 0 }} onClick={() => navigate(`/client/mercerie/products/${product.id}`)}>
                 <h2 style={local.productTitle}>{product.name}</h2>
               </button>
               <p style={local.productText}>{product.short_description || product.description || "Référence mercerie standard."}</p>

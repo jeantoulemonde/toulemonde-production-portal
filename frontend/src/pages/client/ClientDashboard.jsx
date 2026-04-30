@@ -6,6 +6,7 @@ import { api } from "../../api/api";
 import ClientOrdersTable from "../../components/ClientOrdersTable";
 import PageContainer from "../../components/PageContainer";
 import PageHeader from "../../components/PageHeader";
+import SectionHeader from "../../components/SectionHeader";
 import { styles } from "../../styles";
 import { T } from "../../theme";
 import { formatDateTime } from "../../utils/formatters";
@@ -120,10 +121,10 @@ function ClientDashboard() {
 
       {modules.yarn && (
         <>
-          {isMixte && <h2 style={styles.cardTitle}>Fil industriel</h2>}
-          <section style={styles.cardWide}>
-            <h2 style={styles.cardTitle}>À reprendre</h2>
-            {recentDrafts.length ? (
+          {isMixte && <SectionHeader type="industriel" />}
+          {recentDrafts.length > 0 && (
+            <section style={styles.cardWide}>
+              <h2 style={styles.cardTitle}>À reprendre</h2>
               <div style={local.draftGrid}>
                 {recentDrafts.map((draft) => (
                   <button key={draft.id} type="button" style={local.draftCard} onClick={() => navigate(`/client/orders/new?draftId=${draft.id}`)}>
@@ -138,26 +139,24 @@ function ClientDashboard() {
                   </button>
                 ))}
               </div>
-            ) : (
-              <div style={styles.emptyState}>Aucun brouillon en cours.</div>
-            )}
-          </section>
+            </section>
+          )}
 
           <section style={{ ...local.metricsGrid, ...(isMobile ? local.metricsGridMobile : {}) }}>
             {yarnMetrics.map(([title, value]) => (
-              <div key={title} style={local.metricCard}>
+              <div key={title} style={{ ...local.metricCard, boxShadow: `inset 3px 0 0 ${T.industriel}, ${T.shadowSoft}` }}>
                 <div style={styles.metricTitle}>{title}</div>
-                <div style={styles.metricValue}>{value}</div>
+                <div style={{ ...styles.metricValue, color: T.industriel }}>{value}</div>
               </div>
             ))}
           </section>
 
           <div style={{ ...styles.dashboardGrid, ...(isMobile ? styles.dashboardGridMobile : {}) }}>
-            <section style={styles.cardWide}>
+            <section style={{ ...styles.cardWide, boxShadow: `inset 0 2px 0 ${T.industriel}, ${T.shadowSoft}` }}>
               <h2 style={styles.cardTitle}>Demandes en cours</h2>
               <ClientOrdersTable orders={ongoingOrders} columns={["order", "reference", "lines", "quantity", "status", "date"]} empty="Aucune demande en cours." />
             </section>
-            <section style={styles.cardWide}>
+            <section style={{ ...styles.cardWide, boxShadow: `inset 0 2px 0 ${T.industriel}, ${T.shadowSoft}` }}>
               <h2 style={styles.cardTitle}>Dernières demandes</h2>
               <ClientOrdersTable orders={latestOrders} columns={["order", "lines", "quantity", "status"]} empty="Aucune demande récente." />
             </section>
@@ -167,36 +166,36 @@ function ClientDashboard() {
 
       {modules.mercerie && (
         <>
-          {isMixte && <h2 style={{ ...styles.cardTitle, marginTop: 12 }}>Mercerie</h2>}
+          {isMixte && <SectionHeader type="mercerie" />}
           <section style={{ ...local.metricsGrid, ...(isMobile ? local.metricsGridMobile : {}) }}>
             {mercerieMetrics.map(([title, value]) => (
-              <div key={title} style={local.metricCard}>
+              <div key={title} style={{ ...local.metricCard, boxShadow: `inset 3px 0 0 ${T.mercerie}, ${T.shadowSoft}` }}>
                 <div style={styles.metricTitle}>{title}</div>
-                <div style={styles.metricValue}>{value}</div>
+                <div style={{ ...styles.metricValue, color: T.mercerie }}>{value}</div>
               </div>
             ))}
           </section>
 
-          <section style={styles.cardWide}>
+          <section style={{ ...styles.cardWide, boxShadow: `inset 0 2px 0 ${T.mercerie}, ${T.shadowSoft}` }}>
             <h2 style={styles.cardTitle}>Accès rapide</h2>
             <div style={local.draftGrid}>
               <button type="button" style={local.draftCard} onClick={() => navigate("/client/mercerie")}>
-                <Package size={20} color={T.bleu} />
+                <span style={local.mercerieIconWrap}><Package size={20} color={T.mercerie} /></span>
                 <strong>Catalogue</strong>
                 <span style={styles.muted}>Articles standards mercerie.</span>
-                <span style={styles.linkButton}>Parcourir</span>
+                <span style={{ ...styles.linkButton, color: T.mercerie }}>Parcourir</span>
               </button>
               <button type="button" style={local.draftCard} onClick={() => navigate("/client/mercerie/cart")}>
-                <ShoppingCart size={20} color={T.bleu} />
+                <span style={local.mercerieIconWrap}><ShoppingCart size={20} color={T.mercerie} /></span>
                 <strong>Mon panier</strong>
                 <span style={styles.muted}>{cartCount} article(s) en attente.</span>
-                <span style={styles.linkButton}>{cartCount > 0 ? "Finaliser" : "Vide"}</span>
+                <span style={{ ...styles.linkButton, color: T.mercerie }}>{cartCount > 0 ? "Finaliser" : "Vide"}</span>
               </button>
               <button type="button" style={local.draftCard} onClick={() => navigate("/client/mercerie/orders")}>
-                <PlusCircle size={20} color={T.bleu} />
+                <span style={local.mercerieIconWrap}><PlusCircle size={20} color={T.mercerie} /></span>
                 <strong>Commandes mercerie</strong>
                 <span style={styles.muted}>{mercerieOrders.length} commande(s) au total.</span>
-                <span style={styles.linkButton}>Voir l'historique</span>
+                <span style={{ ...styles.linkButton, color: T.mercerie }}>Voir l'historique</span>
               </button>
             </div>
           </section>
@@ -214,6 +213,11 @@ const local = {
   metricsGrid: { display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 14 },
   metricsGridMobile: { gridTemplateColumns: "repeat(2, minmax(0, 1fr))" },
   metricCard: { background: "#fff", border: `1px solid ${T.border}`, borderRadius: 18, padding: 18, boxShadow: T.shadowSoft },
+  mercerieIconWrap: {
+    width: 36, height: 36, borderRadius: 8,
+    background: T.mercerieLight,
+    display: "inline-flex", alignItems: "center", justifyContent: "center",
+  },
 };
 
 export default ClientDashboard;

@@ -4,6 +4,7 @@ import { Trash2 } from "lucide-react";
 import { api } from "../../api/api";
 import PageContainer from "../../components/PageContainer";
 import PageHeader from "../../components/PageHeader";
+import SectionHeader from "../../components/SectionHeader";
 import Field from "../../components/Field";
 import { styles } from "../../styles";
 import { T } from "../../theme";
@@ -111,6 +112,7 @@ function ClientMercerieCart() {
 
   return (
     <PageContainer>
+      <SectionHeader type="mercerie" />
       <PageHeader
         kicker="Mercerie"
         title="Panier mercerie"
@@ -170,7 +172,7 @@ function ClientMercerieCart() {
                         ? `${(Number(item.unit_price) * Number(item.quantity || 0)).toFixed(2)} ${item.currency}`
                         : "Sur demande"}
                     </strong>
-                    <button type="button" style={styles.linkButton} onClick={() => removeItem(lineKey(item))}>Supprimer</button>
+                    <button type="button" style={{ ...styles.linkButton, color: T.mercerie }} onClick={() => removeItem(lineKey(item))}>Supprimer</button>
                   </div>
                 )}
               </div>
@@ -188,7 +190,7 @@ function ClientMercerieCart() {
                       ? `${(Number(item.unit_price) * Number(item.quantity || 0)).toFixed(2)} ${item.currency}`
                       : "Sur demande"}
                   </strong>
-                  <button type="button" style={styles.linkButton} onClick={() => removeItem(lineKey(item))} aria-label="Supprimer">
+                  <button type="button" style={{ ...styles.linkButton, color: T.mercerie }} onClick={() => removeItem(lineKey(item))} aria-label="Supprimer">
                     <Trash2 size={17} />
                   </button>
                 </>

@@ -3,8 +3,10 @@ import { useNavigate } from "react-router";
 import { api } from "../../api/api";
 import PageContainer from "../../components/PageContainer";
 import PageHeader from "../../components/PageHeader";
+import SectionHeader from "../../components/SectionHeader";
 import SimpleTable from "../../components/SimpleTable";
 import { styles } from "../../styles";
+import { T } from "../../theme";
 
 const statusLabels = {
   draft: "Brouillon",
@@ -27,6 +29,7 @@ function ClientMercerieOrders() {
 
   return (
     <PageContainer>
+      <SectionHeader type="mercerie" />
       <PageHeader
         kicker="Mercerie"
         title="Commandes mercerie"
@@ -57,7 +60,7 @@ function ClientMercerieOrders() {
               order_total: Number(order.order_total || 0).toFixed(2),
             }))}
             actions={(order) => (
-              <button style={styles.linkButton} onClick={() => navigate(`/client/mercerie/orders/${order.id}`)}>
+              <button style={{ ...styles.linkButton, color: T.mercerie }} onClick={() => navigate(`/client/mercerie/orders/${order.id}`)}>
                 Détail
               </button>
             )}

@@ -29,6 +29,16 @@ export const T = {
   green: "#236b38",
   success: "#236b38",          // alias de green pour cohérence sémantique
 
+  // Sections (distinction visuelle yarn vs mercerie sur dashboard + nav)
+  industriel: "#185fa5",
+  industrielLight: "#e6f1fb",
+  industrielBorder: "#b5d4f4",
+  industrielText: "#0c447c",
+  mercerie: "#ba7517",
+  mercerieLight: "#faeeda",
+  mercerieBorder: "#fac775",
+  mercerieText: "#633806",
+
   // Échelle de radius
   radiusXs: 6,
   radiusS: 10,

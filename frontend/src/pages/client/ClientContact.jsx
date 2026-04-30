@@ -1,14 +1,17 @@
-import { Mail, Phone, MapPin, Clock } from "lucide-react";
+import { Mail, Phone, MapPin, Clock, Globe } from "lucide-react";
 import PageContainer from "../../components/PageContainer";
 import PageHeader from "../../components/PageHeader";
 import { styles } from "../../styles";
 import { T } from "../../theme";
 
+// Source : https://jtoulemonde.com/ (site officiel J. Toulemonde & Fils,
+// maison mère du portail Toulemonde Production).
 const CONTACT = {
-  email: "contact@toulemonde-production.fr",
-  phone: "+33 (0)3 20 00 00 00",
-  address: "Toulemonde Production — Roubaix, France",
+  email: "contact@jtoulemonde.com",
+  phone: "+33 (0)3 20 72 00 26",
+  address: "J. Toulemonde & Fils — 7-23 Rue Pierre Brossolette, 59700 Marcq-en-Barœul, France",
   hours: "Lundi → Vendredi, 8h30 – 17h30",
+  website: "https://jtoulemonde.com",
 };
 
 export default function ClientContact() {
@@ -34,6 +37,11 @@ export default function ClientContact() {
         </ContactRow>
         <ContactRow icon={MapPin} label="Adresse">
           <span>{CONTACT.address}</span>
+        </ContactRow>
+        <ContactRow icon={Globe} label="Site web">
+          <a href={CONTACT.website} target="_blank" rel="noopener noreferrer" style={{ color: T.bleu, fontWeight: 800 }}>
+            jtoulemonde.com
+          </a>
         </ContactRow>
         <ContactRow icon={Clock} label="Horaires">
           <span>{CONTACT.hours}</span>
