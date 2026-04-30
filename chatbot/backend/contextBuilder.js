@@ -23,6 +23,9 @@ async function loadClientFacts(clientId) {
     [clientId]
   );
   if (!client) return null;
+  // Le catalogue n'est plus pré-fetché ici : le RAG (chat_documents source_type='catalogue')
+  // retrouve les produits pertinents par embedding, c'est plus précis et plus léger qu'une
+  // liste fixe injectée à chaque tour.
   const recentOrders = await db.all(
     `SELECT order_number, status, requested_delivery_date, quantity_kg, created_at
      FROM portal_orders
@@ -37,88 +40,46 @@ async function loadClientFacts(clientId) {
      ORDER BY id DESC LIMIT 5`,
     [clientId]
   );
-  const catalog = client.access_mercerie
-    ? await db.all(
-      `SELECT sku, name, COALESCE(price, 0) AS price, unit_label
-       FROM catalog_products
-       WHERE is_active = 1
-       ORDER BY is_featured DESC, name ASC
-       LIMIT 5`
-    )
-    : [];
-  const categories = client.access_mercerie
-    ? await db.all(
-      `SELECT name FROM catalog_categories WHERE is_active = 1 ORDER BY display_order ASC LIMIT 10`
-    )
-    : [];
-  return { client, recentOrders, recentMercerie, catalog, categories };
+  return { client, recentOrders, recentMercerie };
 }
 
 function formatContextText(facts) {
   if (!facts) return "Aucune information client disponible.";
-  const { client, recentOrders, recentMercerie, catalog, categories } = facts;
+  const { client, recentOrders, recentMercerie } = facts;
 
   const modules = [];
-  if (client.access_yarn) modules.push("fil industriel (yarn)");
+  if (client.access_yarn) modules.push("fil industriel");
   if (client.access_mercerie) modules.push("mercerie");
 
   const parts = [];
   parts.push(`SOCIÉTÉ : ${client.company_name || client.customer_code}`);
-  parts.push(`MODULES ACCESSIBLES : ${modules.join(", ") || "(aucun)"}`);
+  parts.push(`MODULES : ${modules.join(", ") || "(aucun)"}`);
 
   if (recentOrders.length > 0) {
-    parts.push("\nDERNIÈRES COMMANDES FIL :");
+    parts.push("\nCOMMANDES FIL RÉCENTES :");
     for (const o of recentOrders) {
-      const qty = o.quantity_kg ? `${o.quantity_kg} kg` : "—";
+      const qty = o.quantity_kg ? `${o.quantity_kg}kg` : "—";
       const date = o.created_at ? new Date(o.created_at).toLocaleDateString("fr-BE") : "?";
-      parts.push(`  - ${o.order_number} (${date}) — ${qty} — statut : ${o.status}`);
+      parts.push(`  - ${o.order_number} (${date}) ${qty} — ${o.status}`);
     }
   }
 
   if (recentMercerie.length > 0) {
-    parts.push("\nDERNIÈRES COMMANDES MERCERIE :");
+    parts.push("\nCOMMANDES MERCERIE RÉCENTES :");
     for (const o of recentMercerie) {
       const date = o.created_at ? new Date(o.created_at).toLocaleDateString("fr-BE") : "?";
-      parts.push(`  - ${o.order_number} (${date}) — statut : ${o.status}`);
-    }
-  }
-
-  if (catalog.length > 0) {
-    parts.push("\nCATALOGUE MERCERIE (20 produits) :");
-    for (const p of catalog) {
-      const price = p.price ? `${Number(p.price).toFixed(2)}€/${p.unit_label || "pièce"}` : "prix sur demande";
-      parts.push(`  - ${p.sku} : ${p.name} — ${price}`);
-    }
-    if (categories.length > 0) {
-      parts.push(`\nCATÉGORIES : ${categories.map((c) => c.name).join(", ")}`);
+      parts.push(`  - ${o.order_number} (${date}) — ${o.status}`);
     }
   }
 
   return parts.join("\n");
 }
 
-const SYSTEM_BASE = `Tu es l'assistant virtuel du portail client Toulemonde Production,
-un fabricant textile belge spécialisé dans le fil industriel et la mercerie.
-
-Ton rôle est d'aider le client connecté pour :
-- rechercher un article dans le catalogue mercerie en langage naturel ;
-- l'aider à pré-remplir une nouvelle commande de fil industriel ;
-- répondre à une question sur le statut d'une de ses commandes ;
-- fournir des informations générales sur les produits.
-
-Règles strictes :
-1. Ne parle JAMAIS de comptes, commandes ou données d'autres clients.
-2. Si tu ne connais pas une information, dis-le honnêtement et propose
-   au client de demander à parler à un humain via le bouton dédié.
-3. Réponds court : 1-2 phrases. Plus seulement si l'utilisateur le demande
-   explicitement ("explique-moi", "détaille", "raconte"). Pas de répétitions,
-   pas de formules de politesse en ouverture/clôture.
-4. Tu écris en français, ton professionnel mais chaleureux.
-5. Tu n'inventes JAMAIS de prix, de stock, de délai ou de référence produit.
-   Tu cites uniquement les informations présentes dans le contexte ci-dessous.
-6. Si le client demande une action que tu ne peux pas effectuer (passer une
-   commande, modifier ses coordonnées, valider un brouillon), explique-lui
-   où la faire dans le portail.`;
+const SYSTEM_BASE = `Tu es Léon, assistant Toulemonde Production (textile belge — fil & mercerie).
+Réponds en 1-2 phrases, ton professionnel chaleureux, en français.
+Cite UNIQUEMENT le contexte ci-dessous — n'invente JAMAIS prix, stock, délai ou SKU.
+Jamais de données d'autres clients. Si tu ne sais pas : propose "parler à quelqu'un".
+Pour une action que tu ne peux pas faire (commande, modif compte) : indique où dans le portail.`;
 
 async function buildSystemPrompt({ clientId }) {
   let cached = cache.get(clientId);

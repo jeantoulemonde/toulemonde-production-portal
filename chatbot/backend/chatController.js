@@ -142,6 +142,61 @@ async function streamMessage({ user, content, onEvent, abortSignal = null }) {
     logger.warn("RAG indisponible pour ce tour, on continue sans", { error: err.message });
   }
 
+  // ─── Fast-path RAG : si un produit du catalogue matche très fortement la
+  //     question, on court-circuite l'appel LLM et on renvoie une réponse
+  //     templatée. Sub-500ms vs 8-15s pour le LLM. Couvre les "vous avez X ?"
+  //     "combien coûte Y ?" etc. quand le RAG est confiant.
+  const FAST_PATH_THRESHOLD = Number(process.env.CHATBOT_FAST_PATH_THRESHOLD || 0.78);
+  const topHit = ragHits[0];
+  const topMeta = topHit
+    ? (typeof topHit.metadata === "string" ? safeJsonParse(topHit.metadata) : (topHit.metadata || {}))
+    : null;
+  const topScore = topHit ? Number(topHit.score) || 0 : 0;
+  const fastPathEligible =
+    topHit
+    && topHit.source_type === "catalogue"
+    && topScore >= FAST_PATH_THRESHOLD
+    && topMeta?.title
+    && topMeta?.sku;
+
+  if (fastPathEligible) {
+    const priceTxt = topMeta.price != null && !isNaN(Number(topMeta.price))
+      ? `${Number(topMeta.price).toFixed(2)} ${topMeta.currency || "EUR"}/${topMeta.unit_label || "pièce"}`
+      : null;
+    const templated = `Voici **${topMeta.title}** (${topMeta.sku})${priceTxt ? ` — ${priceTxt}` : ""}. Fiche produit ci-dessous.`;
+    onEvent("delta", { content: templated });
+
+    const fastMeta = { fast_path: true, score: topScore };
+    const insertFast = await db.run(
+      `INSERT INTO chat_messages (session_id, role, content, metadata_json, created_at)
+       VALUES (?, 'assistant', ?, ?, CURRENT_TIMESTAMP)`,
+      [session.id, templated, JSON.stringify(fastMeta)]
+    );
+    await db.run(
+      `UPDATE chat_sessions SET last_message_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [session.id]
+    );
+    const fastAssistant = await db.get(
+      `SELECT id, role, content, created_at FROM chat_messages WHERE id = ?`,
+      [insertFast.id]
+    );
+
+    const citations = buildCitations(ragHits);
+    if (citations.length > 0) {
+      await db.run(
+        `UPDATE chat_messages SET metadata_json = ? WHERE id = ?`,
+        [JSON.stringify({ ...fastMeta, citations }), insertFast.id]
+      );
+    }
+    logger.info("[chatbot] fast-path RAG (no LLM)", { score: topScore, sku: topMeta.sku });
+    onEvent("done", {
+      session: await db.get(`SELECT * FROM chat_sessions WHERE id = ?`, [session.id]),
+      assistant: { ...fastAssistant, citations },
+      escalated: false,
+    });
+    return;
+  }
+
   // Streaming Mistral/Qwen via onToken — chaque chunk est repropagé en SSE.
   // abortSignal annule l'appel HTTP à Ollama si le client se déconnecte.
   const result = await callClaude({
@@ -178,23 +233,7 @@ async function streamMessage({ user, content, onEvent, abortSignal = null }) {
     [insertResult.id]
   );
 
-  // Citations : on n'expose les badges produits que pour les hits issus du
-  // catalogue (les chunks filature sont du texte pur, pas de fiche produit).
-  const citations = ragHits
-    .filter((h) => h.source_type === "catalogue")
-    .map((h) => {
-      const meta = typeof h.metadata === "string" ? safeJsonParse(h.metadata) : (h.metadata || {});
-      return {
-        id: meta.id,
-        sku: meta.sku || h.source_id,
-        title: meta.title || h.source_id,
-        price: meta.price,
-        currency: meta.currency || "EUR",
-        unit_label: meta.unit_label || "pièce",
-        image_url: meta.image_url || null,
-        score: Number(h.score?.toFixed?.(3) ?? h.score),
-      };
-    });
+  const citations = buildCitations(ragHits);
 
   // Persiste les citations dans le metadata du message pour permettre un
   // re-render correct au prochain reload de la conversation.
@@ -214,6 +253,27 @@ async function streamMessage({ user, content, onEvent, abortSignal = null }) {
 
 function safeJsonParse(s) {
   try { return JSON.parse(s); } catch { return {}; }
+}
+
+// Construit le tableau de citations exposé au frontend (cartes produit
+// cliquables). On garde uniquement les hits issus du catalogue : les chunks
+// filature sont du texte pur sans fiche produit derrière.
+function buildCitations(ragHits) {
+  return (ragHits || [])
+    .filter((h) => h.source_type === "catalogue")
+    .map((h) => {
+      const m = typeof h.metadata === "string" ? safeJsonParse(h.metadata) : (h.metadata || {});
+      return {
+        id: m.id,
+        sku: m.sku || h.source_id,
+        title: m.title || h.source_id,
+        price: m.price,
+        currency: m.currency || "EUR",
+        unit_label: m.unit_label || "pièce",
+        image_url: m.image_url || null,
+        score: Number(h.score?.toFixed?.(3) ?? h.score),
+      };
+    });
 }
 
 async function requestEscalation({ user, reason }) {

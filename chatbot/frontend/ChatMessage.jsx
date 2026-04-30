@@ -5,6 +5,7 @@
 import { Link } from "react-router";
 import { ThumbsUp, ThumbsDown } from "lucide-react";
 import { chatStyles } from "./chatStyles";
+import TypingIndicator from "./TypingIndicator";
 
 function formatTime(iso) {
   if (!iso) return "";
@@ -111,15 +112,23 @@ function ChatMessage({ message, onFeedback }) {
       ? "Assistant"
       : null;
 
+  // Pendant le streaming, le placeholder assistant a `pending: true` et
+  // `content: ""` jusqu'au 1er token. On rend le TypingIndicator dans la
+  // bulle existante au lieu du contenu — dès le 1er token, content devient
+  // non-vide et le rendu bascule sur renderContent (même bulle, swap propre).
+  const isTyping = role === "assistant" && message.pending && !message.content;
+
   return (
     <>
       <div style={baseStyle}>
         {senderLabel && <div style={{ ...metaStyle, marginTop: 0, marginBottom: 4, fontWeight: 700 }}>{senderLabel}</div>}
-        {renderContent(message.content)}
-        {message.created_at && <div style={metaStyle}>{formatTime(message.created_at)}</div>}
+        {isTyping ? <TypingIndicator /> : renderContent(message.content)}
+        {message.created_at && !isTyping && (
+          <div style={metaStyle}>{formatTime(message.created_at)}</div>
+        )}
       </div>
-      {role === "assistant" && <CitationsRow citations={message.citations} />}
-      {role === "assistant" && <FeedbackRow message={message} onFeedback={onFeedback} />}
+      {role === "assistant" && !isTyping && <CitationsRow citations={message.citations} />}
+      {role === "assistant" && !isTyping && <FeedbackRow message={message} onFeedback={onFeedback} />}
     </>
   );
 }

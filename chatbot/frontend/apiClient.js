@@ -19,10 +19,19 @@ function readToken(scope) {
   }
 }
 
+// Choisit le scope selon l'URL d'abord (/client/* → client, /admin/* → admin),
+// puis fallback sur la priorité historique (admin > client) pour les pages
+// neutres (login, racine). Évite que la bulle client soit masquée quand
+// l'utilisateur est connecté sur les deux scopes en parallèle.
 function readActiveScope() {
   if (typeof window === "undefined") return null;
-  if (window.localStorage.getItem(TOKEN_KEYS.admin)) return "admin";
-  if (window.localStorage.getItem(TOKEN_KEYS.client)) return "client";
+  const path = window.location.pathname || "";
+  const hasAdmin = !!window.localStorage.getItem(TOKEN_KEYS.admin);
+  const hasClient = !!window.localStorage.getItem(TOKEN_KEYS.client);
+  if (path.startsWith("/admin")) return hasAdmin ? "admin" : null;
+  if (path.startsWith("/client")) return hasClient ? "client" : null;
+  if (hasAdmin) return "admin";
+  if (hasClient) return "client";
   return null;
 }
 
