@@ -6,6 +6,7 @@ import { clearSession, getSession, userModules } from "../auth/session";
 import { styles } from "../styles";
 import { useIsMobile } from "../utils/useIsMobile";
 import NavItem from "../components/NavItem";
+import SectionHeader from "../components/SectionHeader";
 import ClientDashboard from "../pages/client/ClientDashboard";
 import NewYarnOrder from "../pages/client/NewYarnOrder";
 import ClientOrders from "../pages/client/ClientOrders";
@@ -39,7 +40,25 @@ function ClientLayout() {
     return () => window.removeEventListener("keydown", handleEscape);
   }, []);
 
-  function logout() {
+  async function logout() {
+    // Best-effort : purge les sessions chatbot du user pour repartir
+    // sur un historique vierge au prochain login (gain de latence sur le
+    // 1er message). On le fait AVANT clearSession sinon plus de JWT pour
+    // s'authentifier auprès du chatbot.
+    try {
+      const token = localStorage.getItem("portal_client_access_token");
+      if (token) {
+        const chatbotUrl = import.meta.env.VITE_CHATBOT_URL || "http://localhost:3020";
+        const ctrl = new AbortController();
+        const timeoutId = setTimeout(() => ctrl.abort(), 1500); // ne bloque pas le logout
+        await fetch(`${chatbotUrl}/api/chat/sessions/current`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+          signal: ctrl.signal,
+        }).catch(() => {});
+        clearTimeout(timeoutId);
+      }
+    } catch { /* silencieux */ }
     clearSession("client");
     navigate("/client/login");
   }
@@ -87,23 +106,23 @@ function ClientLayout() {
           <NavItem to="/client" label="Accueil" icon={Home} collapsed={!drawerExpanded} end onNavigate={() => isMobile && setMenuOpen(false)} />
 
           {isMixte && drawerExpanded && (
-            <div style={styles.menuSectionLabel}>Fil industriel</div>
+            <SectionHeader type="industriel" compact />
           )}
           {modules.yarn && (
             <>
-              <NavItem to="/client/orders/new" label="Nouvelle demande" icon={PlusCircle} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
-              <NavItem to="/client/orders" label={isMixte ? "Mes demandes" : "Mes demandes"} icon={ClipboardList} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
+              <NavItem to="/client/orders/new" label="Nouvelle demande" icon={PlusCircle} collapsed={!drawerExpanded} accent="industriel" onNavigate={() => isMobile && setMenuOpen(false)} />
+              <NavItem to="/client/orders" label={isMixte ? "Mes demandes" : "Mes demandes"} icon={ClipboardList} collapsed={!drawerExpanded} accent="industriel" onNavigate={() => isMobile && setMenuOpen(false)} />
             </>
           )}
 
           {isMixte && drawerExpanded && (
-            <div style={styles.menuSectionLabel}>Mercerie</div>
+            <SectionHeader type="mercerie" compact />
           )}
           {modules.mercerie && (
             <>
-              <NavItem to="/client/mercerie" label="Catalogue" icon={Package} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
-              <NavItem to="/client/mercerie/cart" label="Panier" icon={ShoppingCart} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
-              <NavItem to="/client/mercerie/orders" label="Commandes mercerie" icon={ListChecks} collapsed={!drawerExpanded} onNavigate={() => isMobile && setMenuOpen(false)} />
+              <NavItem to="/client/mercerie" label="Catalogue" icon={Package} collapsed={!drawerExpanded} accent="mercerie" onNavigate={() => isMobile && setMenuOpen(false)} />
+              <NavItem to="/client/mercerie/cart" label="Panier" icon={ShoppingCart} collapsed={!drawerExpanded} accent="mercerie" onNavigate={() => isMobile && setMenuOpen(false)} />
+              <NavItem to="/client/mercerie/orders" label="Commandes mercerie" icon={ListChecks} collapsed={!drawerExpanded} accent="mercerie" onNavigate={() => isMobile && setMenuOpen(false)} />
             </>
           )}
 
