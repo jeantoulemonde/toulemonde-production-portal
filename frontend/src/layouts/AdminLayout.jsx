@@ -19,9 +19,7 @@ import AdminSyncLogs from "../pages/admin/AdminSyncLogs";
 import AdminCatalog from "../pages/admin/AdminCatalog";
 import AdminMailTemplates from "../pages/admin/AdminMailTemplates";
 import AdminLogs from "../pages/admin/AdminLogs";
-// === MODULE CHATBOT (POC, retirable) ===
-import AdminChatPage from "../../../chatbot/frontend/AdminChatPage";
-// === FIN MODULE CHATBOT ===
+import AdminChatPage from "../pages/admin/AdminChatPage";
 
 const SIDEBAR_EXPANDED_WIDTH = 288;
 const SIDEBAR_COLLAPSED_WIDTH = 90;
@@ -140,11 +138,7 @@ function AdminLayout() {
             <AdminNavItem to="/admin/catalog" label="Catalogue mercerie" icon={Package} collapsed={collapsed} />
             <AdminNavItem to="/admin/mail-templates" label="Templates email" icon={Mail} collapsed={collapsed} />
             <AdminNavItem to="/admin/logs" label="Activité du portail" icon={Activity} collapsed={collapsed} />
-            {/* === MODULE CHATBOT (POC, retirable) === */}
-            {import.meta.env.VITE_CHATBOT_ENABLED === "true" && (
-              <AdminNavItem to="/admin/chat" label="Conversations" icon={MessageCircle} collapsed={collapsed} />
-            )}
-            {/* === FIN MODULE CHATBOT === */}
+            <AdminNavItem to="/admin/chat" label="Conversations" icon={MessageCircle} collapsed={collapsed} />
             <AdminNavItem to="/admin/connector-sage" label="Connecteur Sage" icon={Settings} collapsed={collapsed} />
             <AdminNavItem to="/admin/sync-logs" label="Logs de synchronisation" icon={ScrollText} collapsed={collapsed} />
           </nav>
@@ -176,11 +170,7 @@ function AdminLayout() {
           <Route path="catalog" element={<AdminCatalog />} />
           <Route path="mail-templates" element={<AdminMailTemplates />} />
           <Route path="logs" element={<AdminLogs />} />
-          {/* === MODULE CHATBOT (POC, retirable) === */}
-          {import.meta.env.VITE_CHATBOT_ENABLED === "true" && (
-            <Route path="chat" element={<AdminChatPage />} />
-          )}
-          {/* === FIN MODULE CHATBOT === */}
+          <Route path="chat" element={<AdminChatPage />} />
           <Route path="connector-sage" element={<AdminConnectorSage />} />
           <Route path="sync-logs" element={<AdminSyncLogs />} />
           <Route path="*" element={<Navigate to="/admin" replace />} />
