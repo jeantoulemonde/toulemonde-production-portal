@@ -1,0 +1,55 @@
+# Blueprint Render — backend portail Toulemonde Production.
+# Le frontend est hébergé sur Vercel (cf. frontend/vercel.json).
+# Le chatbot est un service séparé (cf. ~/toulemonde-chatbot/render.yaml).
+
+services:
+  - type: web
+    name: toulemonde-portal-backend
+    runtime: node
+    plan: starter            # 512 MB RAM — adapter en prod
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      # Base de données — fournie par le service postgres ci-dessous
+      - key: DATABASE_URL
+        fromDatabase:
+          name: toulemonde-portal-db
+          property: connectionString
+      - key: POSTGRES_SSL
+        value: "true"
+
+      # JWT — secret partagé avec le chatbot, à définir manuellement
+      - key: JWT_SECRET
+        sync: false
+
+      # Email transactionnel
+      - key: EMAIL_DRIVER
+        value: resend
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+
+      # URL publique du portail (pour les liens dans les emails)
+      - key: PORTAL_PUBLIC_URL
+        sync: false
+
+      # CORS — origines autorisées (Vercel frontend, chatbot service)
+      - key: ALLOWED_ORIGINS
+        sync: false
+
+      # Pool Postgres (peuvent rester par défaut)
+      - key: POSTGRES_POOL_MAX
+        value: "25"
+
+databases:
+  - name: toulemonde-portal-db
+    plan: free               # 256 MB stockage — upgrade quand DB approche
+    databaseName: toulemonde_portal
+    user: toulemonde

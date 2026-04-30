@@ -36,13 +36,30 @@ const roles = ["client", "commercial", "admin_portal", "production", "super_admi
 const ADMIN_ROLES = ["admin_portal", "commercial", "production", "super_admin"];
 const PENDING_APPROVAL_STATUSES = ["pending_approval"];
 
-app.use(cors());
+// CORS — allowlist via env var ALLOWED_ORIGINS (séparées par virgule).
+// Défaut permissif pour le dev (Vite localhost:5173). En prod, configurer
+// avec l'URL Vercel + l'URL chatbot externe si différente.
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "http://localhost:5173")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+app.use(cors({
+  origin: (origin, cb) => {
+    // Pas d'origine = curl / server-to-server / extensions → autorisé
+    if (!origin) return cb(null, true);
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    return cb(new Error(`CORS: origine non autorisée: ${origin}`));
+  },
+  credentials: false,
+}));
 app.use(express.json({ limit: "10mb" }));
 app.use(rateLimit({ windowMs: 60 * 1000, limit: 240 }));
 app.use(requestLogger);
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
+// Si DATABASE_URL est défini (ex. Render), pg le parse et ignore host/port/etc.
+// Sinon, utilise les variables individuelles. Permet de garder le dev local
+// (POSTGRES_*) ET la prod managée (DATABASE_URL) sans changer de code.
 const portalPool = new Pool({
+  connectionString: process.env.DATABASE_URL,
   host: process.env.POSTGRES_HOST || "localhost",
   port: Number(process.env.POSTGRES_PORT || 5432),
   database: process.env.POSTGRES_DB || "toulemonde_portal",
@@ -50,9 +67,7 @@ const portalPool = new Pool({
   password: process.env.POSTGRES_PASSWORD,
   ssl: process.env.POSTGRES_SSL === "true" ? { rejectUnauthorized: false } : false,
   // Tuning prod : sans ces overrides, pg.Pool plafonne à 10 connexions et
-  // attend indéfiniment si la file est saturée (Sage scheduler + Resend
-  // fire-and-forget + traffic admin = starvation possible au-delà de ~30
-  // utilisateurs concurrents).
+  // attend indéfiniment si la file est saturée.
   max: Number(process.env.POSTGRES_POOL_MAX || 25),
   idleTimeoutMillis: Number(process.env.POSTGRES_POOL_IDLE_MS || 30000),
   connectionTimeoutMillis: Number(process.env.POSTGRES_POOL_CONNECT_MS || 5000),
