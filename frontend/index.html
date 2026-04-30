@@ -9,13 +9,25 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
-    <!-- === MODULE CHATBOT (projet séparé, retirer ce script pour désactiver) === -->
+    <!-- === MODULE CHATBOT (projet séparé, retirer ce script pour désactiver) ===
+         data-portal-url : URL frontend (utilisée pour bâtir les liens produits
+         depuis la conversation). Le check ON/OFF passe par l'origine du script
+         (same-origin → zéro CORS). -->
+    <script
+      src="https://toulemonde-chatbot.onrender.com/widget.js"
+      data-portal-url="https://toulemonde-production-portal.vercel.app"
+      data-theme="blue"
+      defer
+    ></script>
+    <!-- === FIN MODULE CHATBOT === -->
+
+    <!-- En dev local, commenter le script ci-dessus et décommenter celui-ci :
     <script
       src="http://localhost:3020/widget.js"
       data-portal-url="http://localhost:5173"
       data-theme="blue"
       defer
     ></script>
-    <!-- === FIN MODULE CHATBOT === -->
+    -->
   </body>
 </html>
